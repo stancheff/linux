@@ -739,6 +739,7 @@ enum {
 	BLKPREP_KILL,		/* fatal error, kill, return -EIO */
 	BLKPREP_DEFER,		/* leave on queue */
 	BLKPREP_INVALID,	/* invalid command, kill, return -EREMOTEIO */
+	BLKPREP_DONE,		/* complete w/o error */
 };
 
 extern unsigned long blk_max_low_pfn, blk_max_pfn;

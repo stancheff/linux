@@ -1260,6 +1260,7 @@ scsi_prep_return(struct request_queue *q, struct request *req, int ret)
 	case BLKPREP_KILL:
 	case BLKPREP_INVALID:
 		req->errors = DID_NO_CONNECT << 16;
+	case BLKPREP_DONE:
 		/* release the command and kill it */
 		if (req->special) {
 			struct scsi_cmnd *cmd = req->special;

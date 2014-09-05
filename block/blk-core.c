@@ -2420,8 +2420,12 @@ struct request *blk_peek_request(struct request_queue *q)
 
 			rq = NULL;
 			break;
-		} else if (ret == BLKPREP_KILL || ret == BLKPREP_INVALID) {
+		} else if (ret == BLKPREP_KILL || ret == BLKPREP_INVALID ||
+			   ret == BLKPREP_DONE) {
 			int err = (ret == BLKPREP_INVALID) ? -EREMOTEIO : -EIO;
+
+			if (ret == BLKPREP_DONE)
+				err = 0;
 
 			rq->cmd_flags |= REQ_QUIET;
 			/*
