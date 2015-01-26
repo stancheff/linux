@@ -262,6 +262,50 @@ struct blk_queue_tag {
 #define BLK_SCSI_MAX_CMDS	(256)
 #define BLK_SCSI_CMD_PER_LONG	(BLK_SCSI_MAX_CMDS / (sizeof(long) * 8))
 
+#ifdef CONFIG_BLK_DEV_ZONED
+enum blk_zone_type {
+	BLK_ZONE_TYPE_UNKNOWN,
+	BLK_ZONE_TYPE_CONVENTIONAL,
+	BLK_ZONE_TYPE_SEQWRITE_REQ,
+	BLK_ZONE_TYPE_SEQWRITE_PREF,
+	BLK_ZONE_TYPE_RESERVED,
+};
+
+enum blk_zone_state {
+	BLK_ZONE_UNKNOWN,
+	BLK_ZONE_NO_WP,
+	BLK_ZONE_OPEN,
+	BLK_ZONE_READONLY,
+	BLK_ZONE_OFFLINE,
+	BLK_ZONE_BUSY,
+};
+
+struct blk_zone {
+	struct rb_node node;
+	spinlock_t lock;
+	sector_t start;
+	size_t len;
+	sector_t wp;
+	enum blk_zone_type type;
+	enum blk_zone_state state;
+	void *private_data;
+};
+
+#define blk_zone_is_smr(z) ((z)->type == BLK_ZONE_TYPE_SEQWRITE_REQ ||	\
+			    (z)->type == BLK_ZONE_TYPE_SEQWRITE_PREF)
+
+#define blk_zone_is_cmr(z) ((z)->type == BLK_ZONE_TYPE_CONVENTIONAL)
+#define blk_zone_is_full(z) ((z)->wp == (z)->start + (z)->len)
+#define blk_zone_is_empty(z) ((z)->wp == (z)->start)
+
+extern struct blk_zone *blk_lookup_zone(struct request_queue *, sector_t);
+extern struct blk_zone *blk_insert_zone(struct request_queue *,
+					struct blk_zone *);
+extern void blk_drop_zones(struct request_queue *);
+#else
+static inline void blk_drop_zones(struct request_queue *q) { };
+#endif
+
 struct queue_limits {
 	unsigned long		bounce_pfn;
 	unsigned long		seg_boundary_mask;
@@ -434,6 +478,9 @@ struct request_queue {
 
 	struct queue_limits	limits;
 
+#ifdef CONFIG_BLK_DEV_ZONED
+	struct rb_root		zones;
+#endif
 	/*
 	 * sg stuff
 	 */
