@@ -92,6 +92,7 @@ MODULE_ALIAS_BLOCKDEV_MAJOR(SCSI_DISK15_MAJOR);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_DISK);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_MOD);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_RBC);
+MODULE_ALIAS_SCSI_DEVICE(TYPE_ZBC);
 
 #if !defined(CONFIG_DEBUG_BLOCK_EXT_DEVT)
 #define SD_MINORS	16
@@ -162,7 +163,7 @@ cache_type_store(struct device *dev, struct device_attribute *attr,
 	static const char temp[] = "temporary ";
 	int len;
 
-	if (sdp->type != TYPE_DISK)
+	if (sdp->type != TYPE_DISK && sdp->type != TYPE_ZBC)
 		/* no cache control on RBC devices; theoretically they
 		 * can do it, but there's probably so many exceptions
 		 * it's not worth the risk */
@@ -261,7 +262,7 @@ allow_restart_store(struct device *dev, struct device_attribute *attr,
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
-	if (sdp->type != TYPE_DISK)
+	if (sdp->type != TYPE_DISK && sdp->type != TYPE_ZBC)
 		return -EINVAL;
 
 	sdp->allow_restart = simple_strtoul(buf, NULL, 10);
@@ -392,7 +393,7 @@ provisioning_mode_store(struct device *dev, struct device_attribute *attr,
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
-	if (sdkp->zoned == 1) {
+	if (sdkp->zoned == 1 || sdp->type == TYPE_ZBC) {
 		if (!strncmp(buf, lbp_mode[SD_ZBC_RESET_WP], 20)) {
 			sd_config_discard(sdkp, SD_ZBC_RESET_WP);
 			return count;
@@ -466,7 +467,7 @@ max_write_same_blocks_store(struct device *dev, struct device_attribute *attr,
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 
-	if (sdp->type != TYPE_DISK)
+	if (sdp->type != TYPE_DISK && sdp->type != TYPE_ZBC)
 		return -EINVAL;
 
 	err = kstrtoul(buf, 10, &max);
@@ -778,6 +779,11 @@ static int sd_setup_discard_cmnd(struct scsi_cmnd *cmd)
 		break;
 
 	case SD_ZBC_RESET_WP:
+		/* sd_zbc_setup_discard uses block layer sector units */
+		ret = sd_zbc_setup_discard(sdkp, rq, blk_rq_pos(rq),
+					   blk_rq_sectors(rq));
+		if (ret != BLKPREP_OK)
+			goto out;
 		cmd->cmd_len = 16;
 		cmd->cmnd[0] = ZBC_OUT;
 		cmd->cmnd[1] = ZO_RESET_WRITE_POINTER;
@@ -872,6 +878,13 @@ static int sd_setup_write_same_cmnd(struct scsi_cmnd *cmd)
 		return BLKPREP_INVALID;
 
 	BUG_ON(bio_offset(bio) || bio_iovec(bio).bv_len != sdp->sector_size);
+
+	if (sdkp->zoned == 1 || sdp->type == TYPE_ZBC) {
+		/* sd_zbc_setup_read_write uses block layer sector units */
+		ret = sd_zbc_setup_read_write(sdkp, rq, sector, nr_sectors);
+		if (ret != BLKPREP_OK)
+			return ret;
+	}
 
 	sector >>= ilog2(sdp->sector_size) - 9;
 	nr_sectors >>= ilog2(sdp->sector_size) - 9;
@@ -991,6 +1004,13 @@ static int sd_setup_read_write_cmnd(struct scsi_cmnd *SCpnt)
 
 	SCSI_LOG_HLQUEUE(2, scmd_printk(KERN_INFO, SCpnt, "block=%llu\n",
 					(unsigned long long)block));
+
+	if (sdkp->zoned == 1 || sdp->type == TYPE_ZBC) {
+		/* sd_zbc_setup_read_write uses block layer sector units */
+		ret = sd_zbc_setup_read_write(sdkp, rq, block, this_count);
+		if (ret != BLKPREP_OK)
+			goto out;
+	}
 
 	/*
 	 * If we have a 1K hardware sectorsize, prevent access to single
@@ -1935,6 +1955,13 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 			good_bytes = blk_rq_bytes(req);
 			scsi_set_resid(SCpnt, 0);
 		} else {
+#ifdef CONFIG_SCSI_ZBC
+			if (op == ZBC_OUT)
+				/* RESET WRITE POINTER failed */
+				sd_zbc_update_zones(sdkp,
+						    blk_rq_pos(req),
+						    512, true);
+#endif
 			good_bytes = 0;
 			scsi_set_resid(SCpnt, blk_rq_bytes(req));
 		}
@@ -1997,6 +2024,26 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 					req->cmd_flags |= REQ_QUIET;
 				}
 			}
+		}
+		if (sshdr.asc == 0x21) {
+			/*
+			 * ZBC: read beyond the write pointer position.
+			 * Clear out error and return the buffer as-is.
+			 */
+			if (sshdr.ascq == 0x06) {
+				good_bytes = blk_rq_bytes(req);
+				scsi_set_resid(SCpnt, 0);
+			}
+#ifdef CONFIG_SCSI_ZBC
+			/*
+			 * ZBC: Unaligned write command.
+			 * Write did not start a write pointer position.
+			 */
+			if (sshdr.ascq == 0x04)
+				sd_zbc_update_zones(sdkp,
+						    blk_rq_pos(req),
+						    512, true);
+#endif
 		}
 		break;
 	default:
@@ -2137,58 +2184,6 @@ sd_spinup_disk(struct scsi_disk *sdkp)
 	}
 }
 
-/**
- * sd_zbc_report_zones - Issue a REPORT ZONES scsi command
- * @sdkp: SCSI disk to which the command should be send
- * @buffer: response buffer
- * @bufflen: length of @buffer
- * @start_sector: logical sector for the zone information should be reported
- * @option: option for report zones command
- * @partial: flag to set 'partial' bit for report zones command
- */
-static int
-sd_zbc_report_zones(struct scsi_disk *sdkp, unsigned char *buffer,
-		    int bufflen, sector_t start_sector,
-		    enum zbc_zone_reporting_options option, bool partial)
-{
-	struct scsi_device *sdp = sdkp->device;
-	const int timeout = sdp->request_queue->rq_timeout
-		* SD_FLUSH_TIMEOUT_MULTIPLIER;
-	struct scsi_sense_hdr sshdr;
-	sector_t start_lba = sectors_to_logical(sdkp->device, start_sector);
-	unsigned char cmd[16];
-	int result;
-
-	if (!scsi_device_online(sdp)) {
-		sd_printk(KERN_INFO, sdkp, "device not online\n");
-		return -ENODEV;
-	}
-
-	sd_printk(KERN_INFO, sdkp, "REPORT ZONES lba %zu len %d\n",
-		  start_lba, bufflen);
-
-	memset(cmd, 0, 16);
-	cmd[0] = ZBC_IN;
-	cmd[1] = ZI_REPORT_ZONES;
-	put_unaligned_be64(start_lba, &cmd[2]);
-	put_unaligned_be32(bufflen, &cmd[10]);
-	cmd[14] = (partial ? ZBC_REPORT_ZONE_PARTIAL : 0) | option;
-	memset(buffer, 0, bufflen);
-
-	result = scsi_execute_req(sdp, cmd, DMA_FROM_DEVICE,
-				  buffer, bufflen, &sshdr,
-				  timeout, SD_MAX_RETRIES, NULL);
-
-	if (result) {
-		sd_printk(KERN_NOTICE, sdkp,
-			  "REPORT ZONES lba %zu failed with %d/%d\n",
-			  start_lba, host_byte(result), driver_byte(result));
-
-		return -EIO;
-	}
-	return 0;
-}
-
 /*
  * Determine whether disk supports Data Integrity Field.
  */
@@ -2238,8 +2233,11 @@ static void sd_read_zones(struct scsi_disk *sdkp, unsigned char *buffer)
 	u8 same;
 	u64 zone_len, lba;
 
-	if (sdkp->zoned != 1)
-		/* Device managed, no special handling required */
+	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC)
+		/*
+		 * Device managed or normal SCSI disk,
+		 * no special handling required
+		 */
 		return;
 
 	retval = sd_zbc_report_zones(sdkp, buffer, SD_BUF_SIZE,
@@ -2284,6 +2282,8 @@ static void sd_read_zones(struct scsi_disk *sdkp, unsigned char *buffer)
 	blk_queue_chunk_sectors(sdkp->disk->queue,
 				logical_to_sectors(sdkp->device, zone_len));
 	sd_config_discard(sdkp, SD_ZBC_RESET_WP);
+
+	sd_zbc_setup(sdkp, buffer, SD_BUF_SIZE);
 }
 
 static void read_capacity_error(struct scsi_disk *sdkp, struct scsi_device *sdp,
@@ -2879,7 +2879,7 @@ static void sd_read_app_tag_own(struct scsi_disk *sdkp, unsigned char *buffer)
 	struct scsi_mode_data data;
 	struct scsi_sense_hdr sshdr;
 
-	if (sdp->type != TYPE_DISK)
+	if (sdp->type != TYPE_DISK && sdp->type != TYPE_ZBC)
 		return;
 
 	if (sdkp->protection_type == 0)
@@ -3310,9 +3310,16 @@ static int sd_probe(struct device *dev)
 
 	scsi_autopm_get_device(sdp);
 	error = -ENODEV;
-	if (sdp->type != TYPE_DISK && sdp->type != TYPE_MOD && sdp->type != TYPE_RBC)
+	if (sdp->type != TYPE_DISK &&
+	    sdp->type != TYPE_ZBC &&
+	    sdp->type != TYPE_MOD &&
+	    sdp->type != TYPE_RBC)
 		goto out;
 
+#ifndef CONFIG_SCSI_ZBC
+	if (sdp->type == TYPE_ZBC)
+		goto out;
+#endif
 	SCSI_LOG_HLQUEUE(3, sdev_printk(KERN_INFO, sdp,
 					"sd_probe\n"));
 
@@ -3415,6 +3422,8 @@ static int sd_remove(struct device *dev)
 	device_del(&sdkp->dev);
 	del_gendisk(sdkp->disk);
 	sd_shutdown(dev);
+
+	sd_zbc_remove(sdkp);
 
 	blk_register_region(devt, SD_MINORS, NULL,
 			    sd_default_probe, NULL, NULL);

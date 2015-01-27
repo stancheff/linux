@@ -202,6 +202,14 @@ config SCSI_ENCLOSURE
 	  it has an enclosure device.  Selecting this option will just allow
 	  certain enclosure conditions to be reported and is not required.
 
+config SCSI_ZBC
+	bool "SCSI ZBC (zoned block commands) Support"
+	depends on SCSI && BLK_DEV_ZONED
+	help
+	  Enable support for ZBC (zoned block commands) devices.
+
+	  If unsure say N.
+
 config SCSI_CONSTANTS
 	bool "Verbose SCSI error reporting (kernel size += 36K)"
 	depends on SCSI

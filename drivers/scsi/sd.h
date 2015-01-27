@@ -65,6 +65,12 @@ struct scsi_disk {
 	struct scsi_device *device;
 	struct device	dev;
 	struct gendisk	*disk;
+#ifdef CONFIG_SCSI_ZBC
+	struct workqueue_struct *zone_work_q;
+	unsigned long	zone_flags;
+#define SD_ZBC_ZONE_RESET 1
+#define SD_ZBC_ZONE_INIT  2
+#endif
 	atomic_t	openers;
 	sector_t	capacity;	/* size in logical blocks */
 	u32		max_xfer_blocks;
@@ -281,5 +287,53 @@ static inline void sd_dif_complete(struct scsi_cmnd *cmd, unsigned int a)
 }
 
 #endif /* CONFIG_BLK_DEV_INTEGRITY */
+
+#ifdef CONFIG_SCSI_ZBC
+
+extern int sd_zbc_report_zones(struct scsi_disk *, unsigned char *, int,
+			       sector_t, enum zbc_zone_reporting_options, bool);
+extern int sd_zbc_setup(struct scsi_disk *, char *, int);
+extern void sd_zbc_remove(struct scsi_disk *);
+extern void sd_zbc_reset_zones(struct scsi_disk *);
+extern int sd_zbc_setup_discard(struct scsi_disk *, struct request *,
+				sector_t, unsigned int);
+extern int sd_zbc_setup_read_write(struct scsi_disk *, struct request *,
+				   sector_t, unsigned int);
+extern void sd_zbc_update_zones(struct scsi_disk *, sector_t, int, bool);
+extern void sd_zbc_refresh_zone_work(struct work_struct *);
+
+#else /* CONFIG_SCSI_ZBC */
+
+static inline int sd_zbc_report_zones(struct scsi_disk *sdkp,
+				      unsigned char *buf, int buf_len,
+				      sector_t start_sector,
+				      enum zbc_zone_reporting_options option,
+				      bool partial)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int sd_zbc_setup(struct scsi_disk *sdkp,
+			       unsigned char *buf, int buf_len)
+{
+	return 0;
+}
+
+static inline int sd_zbc_setup_discard(struct scsi_disk *sdkp,
+				       struct request *rq, sector_t sector,
+				       unsigned int num_sectors)
+{
+	return BLKPREP_OK;
+}
+
+static inline int sd_zbc_setup_read_write(struct scsi_disk *sdkp,
+					  struct request *rq, sector_t sector,
+					  unsigned int num_sectors)
+{
+	return BLKPREP_OK;
+}
+
+static inline void sd_zbc_remove(struct scsi_disk *sdkp) {}
+#endif /* CONFIG_SCSI_ZBC */
 
 #endif /* _SCSI_DISK_H */
