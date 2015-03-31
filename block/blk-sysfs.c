@@ -229,6 +229,42 @@ static ssize_t queue_max_hw_sectors_show(struct request_queue *q, char *page)
 	return queue_var_show(max_hw_sectors_kb, (page));
 }
 
+#ifdef CONFIG_BLK_DEV_ZONED
+static ssize_t queue_zoned_show(struct request_queue *q, char *page)
+{
+	struct rb_node *node;
+	struct blk_zone *zone;
+	ssize_t offset = 0, end = 0;
+	size_t size = 0, num = 0;
+	enum blk_zone_type type = BLK_ZONE_TYPE_UNKNOWN;
+
+	for (node = rb_first(&q->zones); node; node = rb_next(node)) {
+		zone = rb_entry(node, struct blk_zone, node);
+		if (zone->type != type ||
+		    zone->len != size ||
+		    end != zone->start) {
+			if (size != 0)
+				offset += sprintf(page + offset, "%zu\n", num);
+			/* We can only store one page ... */
+			if (offset + 42 > PAGE_SIZE) {
+				offset += sprintf(page + offset, "...\n");
+				return offset;
+			}
+			size = zone->len;
+			type = zone->type;
+			offset += sprintf(page + offset, "%zu %zu %d ",
+					  zone->start, size, type);
+			num = 0;
+			end = zone->start + size;
+		} else
+			end += zone->len;
+		num++;
+	}
+	offset += sprintf(page + offset, "%zu\n", num);
+	return offset;
+}
+#endif
+
 #define QUEUE_SYSFS_BIT_FNS(name, flag, neg)				\
 static ssize_t								\
 queue_show_##name(struct request_queue *q, char *page)			\
@@ -489,6 +525,13 @@ static struct queue_sysfs_entry queue_write_same_max_entry = {
 	.show = queue_write_same_max_show,
 };
 
+#ifdef CONFIG_BLK_DEV_ZONED
+static struct queue_sysfs_entry queue_zoned_entry = {
+	.attr = {.name = "zoned", .mode = S_IRUGO },
+	.show = queue_zoned_show,
+};
+#endif
+
 static struct queue_sysfs_entry queue_nonrot_entry = {
 	.attr = {.name = "rotational", .mode = S_IRUGO | S_IWUSR },
 	.show = queue_show_nonrot,
@@ -557,6 +600,9 @@ static struct attribute *default_attrs[] = {
 	&queue_discard_zeroes_data_entry.attr,
 	&queue_write_same_max_entry.attr,
 	&queue_nonrot_entry.attr,
+#ifdef CONFIG_BLK_DEV_ZONED
+	&queue_zoned_entry.attr,
+#endif
 	&queue_nomerges_entry.attr,
 	&queue_rq_affinity_entry.attr,
 	&queue_iostats_entry.attr,
