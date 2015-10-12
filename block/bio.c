@@ -1728,6 +1728,59 @@ static inline bool bio_remaining_done(struct bio *bio)
 	return false;
 }
 
+static DEFINE_PER_CPU(struct bio **, bio_end_queue) = { NULL };
+
+static struct bio *unwind_bio_endio(struct bio *bio)
+{
+	struct bio ***bio_end_queue_ptr;
+	struct bio *bio_queue;
+	struct bio *chain_bio = NULL;
+	int error = bio->bi_error;
+	unsigned long flags;
+
+	local_irq_save(flags);
+	bio_end_queue_ptr = this_cpu_ptr(&bio_end_queue);
+
+	if (*bio_end_queue_ptr) {
+		**bio_end_queue_ptr = bio;
+		*bio_end_queue_ptr = &bio->bi_next;
+		bio->bi_next = NULL;
+	} else {
+		bio_queue = NULL;
+		*bio_end_queue_ptr = &bio_queue;
+
+next_bio:
+		if (bio->bi_end_io == bio_chain_endio) {
+			struct bio *parent = bio->bi_private;
+
+			bio_put(bio);
+			chain_bio = parent;
+			goto out;
+		}
+
+		if (bio->bi_end_io) {
+			if (!bio->bi_error)
+				bio->bi_error = error;
+			bio->bi_end_io(bio);
+		}
+
+		if (bio_queue) {
+			bio = bio_queue;
+			bio_queue = bio->bi_next;
+			if (!bio_queue)
+				*bio_end_queue_ptr = &bio_queue;
+			goto next_bio;
+		}
+		*bio_end_queue_ptr = NULL;
+	}
+
+out:
+
+	local_irq_restore(flags);
+
+	return chain_bio;
+}
+
 /**
  * bio_endio - end I/O on a bio
  * @bio:	bio
@@ -1757,9 +1810,7 @@ void bio_endio(struct bio *bio)
 			bio_put(bio);
 			bio = parent;
 		} else {
-			if (bio->bi_end_io)
-				bio->bi_end_io(bio);
-			bio = NULL;
+			bio = unwind_bio_endio(bio);
 		}
 	}
 }
