@@ -39,4 +39,12 @@ int blk_zoned_reset_wp_ata(struct gendisk *disk, u64 start_lba);
 int blk_zoned_report_ata(struct gendisk *disk, u64, u8,
 			 struct bdev_zone_report *, size_t);
 
+/* for testing from userspace via ioctl */
+int _inquiry_ioctl(struct gendisk *disk, void __user *parg);
+int _zone_close_ioctl(struct gendisk *disk, unsigned long arg);
+int _zone_finish_ioctl(struct gendisk *disk, unsigned long arg);
+int _zone_open_ioctl(struct gendisk *disk, unsigned long arg);
+int _reset_wp_ioctl(struct gendisk *disk, unsigned long arg);
+int _report_zones_ioctl(struct gendisk *disk, void __user *parg);
+
 #endif /* BLK_ZONED_CTRL_H */

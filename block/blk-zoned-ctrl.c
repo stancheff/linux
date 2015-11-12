@@ -469,3 +469,187 @@ int blk_zoned_reset_wp_ata(struct gendisk *disk, u64 start_lba)
 	return _blk_zoned_command_ata(disk, start_lba, ZONE_RESET_WP);
 }
 EXPORT_SYMBOL(blk_zoned_reset_wp_ata);
+
+int _inquiry_ioctl(struct gendisk *disk, void __user *parg)
+{
+	int error = 0;
+	size_t result_size = 0;
+	size_t alloc_size = PAGE_SIZE;
+	struct zoned_inquiry *inq = kmalloc(alloc_size, GFP_KERNEL);
+	u8 extended;
+
+	if (!inq) {
+		error = -ENOMEM;
+		goto out;
+	}
+	if (copy_from_user(inq, parg, sizeof(*inq))) {
+		error = -EFAULT;
+		goto out;
+	}
+	result_size = inq->mx_resp_len + offsetof(struct zoned_inquiry, result);
+	if (result_size > alloc_size) {
+		void *tmp;
+
+		alloc_size = result_size;
+		tmp = krealloc(inq, alloc_size, GFP_KERNEL);
+		if (!tmp) {
+			error = -ENOMEM;
+			goto out;
+		}
+		inq = tmp;
+	}
+
+	extended = inq->evpd & 0x7f;
+	if (inq->evpd & ZOPT_USE_ATA_PASS) {
+		struct zoned_identity ident;
+
+		pr_debug("%s: using ata passthrough.\n", __func__);
+		error = blk_zoned_identify_ata(disk, &ident);
+		inq->result[8] = ident.type_id << 4;
+	} else {
+		error = blk_zoned_inquiry(disk, extended,   inq->pg_op,
+					  inq->mx_resp_len, inq->result);
+	}
+	if (error) {
+		error = -EFAULT;
+		goto out;
+	}
+	if (copy_to_user(parg, inq, result_size)) {
+		error = -EFAULT;
+		goto out;
+	}
+
+out:
+	kfree(inq);
+
+	return error;
+}
+EXPORT_SYMBOL(_inquiry_ioctl);
+
+int _zone_close_ioctl(struct gendisk *disk, unsigned long arg)
+{
+	int error = -EFAULT;
+
+	if (arg & 1) {
+		if (arg != ~0ul)
+			arg &= ~1ul; /* ~1 :: 0xFF...FE */
+		error = blk_zoned_close_ata(disk, arg);
+	} else {
+		if (arg == ~1ul)
+			arg = ~0ul;
+		error = blk_zoned_close(disk, arg);
+	}
+
+	return error;
+}
+EXPORT_SYMBOL(_zone_close_ioctl);
+
+int _zone_finish_ioctl(struct gendisk *disk, unsigned long arg)
+{
+	int error = -EFAULT;
+
+	if (arg & 1) {
+		if (arg != ~0ul)
+			arg &= ~1ul; /* ~1 :: 0xFF...FE */
+		error = blk_zoned_finish_ata(disk, arg);
+	} else {
+		if (arg == ~1ul)
+			arg = ~0ul;
+		error = blk_zoned_finish(disk, arg);
+	}
+
+	return error;
+}
+EXPORT_SYMBOL(_zone_finish_ioctl);
+
+int _zone_open_ioctl(struct gendisk *disk, unsigned long arg)
+{
+	int error = -EFAULT;
+
+	if (arg & 1) {
+		if (arg != ~0ul)
+			arg &= ~1ul; /* ~1 :: 0xFF...FE */
+		error = blk_zoned_open_ata(disk, arg);
+	} else {
+		if (arg == ~1ul)
+			arg = ~0ul;
+		error = blk_zoned_open(disk, arg);
+	}
+
+	return error;
+}
+EXPORT_SYMBOL(_zone_open_ioctl);
+
+int _reset_wp_ioctl(struct gendisk *disk, unsigned long arg)
+{
+	int error = -EFAULT;
+
+	if (arg & 1) {
+		if (arg != ~0ul)
+			arg &= ~1ul; /* ~1 :: 0xFF...FE */
+		error = blk_zoned_reset_wp_ata(disk, arg);
+	} else {
+		if (arg == ~1ul)
+			arg = ~0ul;
+		error = blk_zoned_reset_wp(disk, arg);
+	}
+
+	return error;
+}
+EXPORT_SYMBOL(_reset_wp_ioctl);
+
+int _report_zones_ioctl(struct gendisk *disk, void __user *parg)
+{
+	int error = -EFAULT;
+	struct bdev_zone_report_io *zone_iodata = NULL;
+	u32 alloc_size = max(PAGE_SIZE, sizeof(*zone_iodata));
+	u8 opt = 0;
+
+	zone_iodata = kmalloc(alloc_size, GFP_KERNEL);
+	if (!zone_iodata) {
+		error = -ENOMEM;
+		goto report_zones_out;
+	}
+	if (copy_from_user(zone_iodata, parg, sizeof(*zone_iodata))) {
+		error = -EFAULT;
+		goto report_zones_out;
+	}
+	if (zone_iodata->data.in.return_page_count > alloc_size) {
+		void *tmp;
+
+		alloc_size = zone_iodata->data.in.return_page_count;
+		if (alloc_size < KMALLOC_MAX_SIZE) {
+			tmp = krealloc(zone_iodata, alloc_size, GFP_KERNEL);
+			if (!tmp) {
+				error = -ENOMEM;
+				goto report_zones_out;
+			}
+			zone_iodata = tmp;
+		} else {
+			/* Result requires DMA capable memory */
+			pr_err("Not enough memory available for request.\n");
+			error = -ENOMEM;
+			goto report_zones_out;
+		}
+	}
+	opt = zone_iodata->data.in.report_option & 0x7F;
+	if (zone_iodata->data.in.report_option & ZOPT_USE_ATA_PASS)
+		error = blk_zoned_report_ata(disk,
+				zone_iodata->data.in.zone_locator_lba,
+				opt, &zone_iodata->data.out, alloc_size);
+	else
+		error = blk_zoned_report(disk,
+				zone_iodata->data.in.zone_locator_lba,
+				opt, &zone_iodata->data.out, alloc_size);
+
+	if (error)
+		goto report_zones_out;
+
+	if (copy_to_user(parg, zone_iodata, alloc_size))
+		error = -EFAULT;
+
+report_zones_out:
+	kfree(zone_iodata);
+	return error;
+}
+EXPORT_SYMBOL(_report_zones_ioctl);
