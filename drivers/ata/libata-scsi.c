@@ -65,6 +65,7 @@ static struct ata_device *__ata_scsi_find_dev(struct ata_port *ap,
 					const struct scsi_device *scsidev);
 static struct ata_device *ata_scsi_find_dev(struct ata_port *ap,
 					    const struct scsi_device *scsidev);
+static void scsi_16_lba_len(const u8 *cdb, u64 *plba, u32 *plen);
 
 #define RW_RECOVERY_MPAGE 0x1
 #define RW_RECOVERY_MPAGE_LEN 12
@@ -984,7 +985,7 @@ static void ata_to_sense_error(unsigned id, u8 drv_stat, u8 drv_err, u8 *sk,
  *	passthrough command, so we use the following sense data:
  *	sk = RECOVERED ERROR
  *	asc,ascq = ATA PASS-THROUGH INFORMATION AVAILABLE
- *      
+ *
  *
  *	LOCKING:
  *	None.
@@ -1456,6 +1457,160 @@ static unsigned int ata_scsi_flush_xlat(struct ata_queued_cmd *qc)
 
 	return 0;
 }
+
+/**
+ *	ata_scsi_zone_command_xlat - Translate SCSI Reset Write Pointer command
+ *	@qc: Storage for translated ATA taskfile
+ *
+ *	Sets up an ATA taskfile to issue Reset Write Pointers Ext command.
+ *	May need change when zac specs is available.
+ *
+ *	LOCKING:
+ *	spin_lock_irqsave(host lock)
+ *
+ *	RETURNS:
+ *	Zero on success, non-zero on error.
+ */
+static unsigned int ata_scsi_zone_command_xlat(struct ata_queued_cmd *qc)
+{
+	struct scsi_cmnd *scmd = qc->scsicmd;
+	struct ata_taskfile *tf = &qc->tf;
+	const u8 *cdb = scmd->cmnd;
+	u8 sa; /* service action */
+	u8 all_bit;
+
+	if (scmd->cmd_len < 16)
+		goto invalid_fld;
+
+	sa = cdb[1] & 0x1f;
+
+	if (!(sa == ATA_SUBCMD_CLOSE_ZONES ||
+	      sa == ATA_SUBCMD_FINISH_ZONES ||
+	      sa == ATA_SUBCMD_OPEN_ZONES ||
+	      sa == ATA_SUBCMD_RESET_WP))
+		goto invalid_fld;
+
+	all_bit = cdb[14] & 0x01;
+	if (!all_bit) {
+		struct ata_device *dev = qc->dev;
+		u64 max_lba = dev->n_sectors;     /* Maximal LBA supported */
+		u64 slba;
+		u32 slen;
+
+		scsi_16_lba_len(cdb, &slba, &slen);
+		if (slba > max_lba) {
+			ata_dev_err(dev,
+				"Zone start LBA %llu > %llu (Max LBA)\n",
+				slba, max_lba);
+			goto out_of_range;
+		}
+
+		tf->hob_lbah = (slba >> 40) & 0xff;
+		tf->hob_lbam = (slba >> 32) & 0xff;
+		tf->hob_lbal = (slba >> 24) & 0xff;
+		tf->lbah = (slba >> 16) & 0xff;
+		tf->lbam = (slba >> 8) & 0xff;
+		tf->lbal = slba & 0xff;
+	}
+
+
+	tf->flags |= ATA_TFLAG_DEVICE | ATA_TFLAG_LBA48;
+	tf->protocol = ATA_PROT_NODATA;
+
+	tf->command = ATA_CMD_ZONE_MAN_OUT;
+	tf->feature = sa;
+	tf->hob_feature = all_bit;
+
+	return 0;
+
+ invalid_fld:
+	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x24, 0x0);
+	/* "Invalid field in cbd" */
+	return 1;
+ out_of_range:
+	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x21, 0x0);
+	/* LBA out of range */
+	return 1;
+}
+
+/**
+ *	ata_scsi_report_zones_xlat - Translate SCSI Report Zones command
+ *	@qc: Storage for translated ATA taskfile
+ *
+ *	Sets up an ATA taskfile to issue Report Zones Ext command.
+ *	May need change when zac specs is updated.
+ *
+ *	LOCKING:
+ *	spin_lock_irqsave(host lock)
+ *
+ *	RETURNS:
+ *	Zero on success, non-zero on error.
+ */
+static unsigned int ata_scsi_report_zones_xlat(struct ata_queued_cmd *qc)
+{
+	struct ata_device *dev = qc->dev;
+	struct scsi_cmnd *scmd = qc->scsicmd;
+	struct ata_taskfile *tf = &qc->tf;
+	const u8 *cdb = scmd->cmnd;
+	u64 max_lba = dev->n_sectors;     /* Maximal LBA supported */
+	u64 slba;       /* Start LBA in scsi command */
+	u32 alloc_len;  /* Alloc length (in bytes) */
+	u8 reporting_option;
+
+	if (scmd->cmd_len < 16) {
+		ata_dev_err(dev, "ZAC Error: Command length is less than 16\n");
+		goto invalid_fld;
+	}
+	if (unlikely(!dev->dma_mode)) {
+		ata_dev_err(dev, "ZAC Error: No DMA mode is set\n");
+		goto invalid_fld;
+	}
+	if (!scsi_sg_count(scmd)) {
+		ata_dev_err(dev, "ZAC Error: SCSI sg count is zero\n");
+		goto invalid_fld;
+	}
+	scsi_16_lba_len(cdb, &slba, &alloc_len);
+	if (slba > max_lba) {
+		ata_dev_err(dev, "Zone start LBA %llu > %llu (Max LBA)\n",
+			    slba, max_lba);
+		goto out_of_range;
+	}
+
+	reporting_option = cdb[14] & 0x3f;
+
+	tf->flags |= ATA_TFLAG_DEVICE | ATA_TFLAG_LBA48 | ATA_TFLAG_ISADDR;
+	tf->protocol = ATA_PROT_DMA;
+
+	tf->command = ATA_CMD_ZONE_MAN_IN;
+
+	tf->hob_lbah = (slba >> 40) & 0xff;
+	tf->hob_lbam = (slba >> 32) & 0xff;
+	tf->hob_lbal = (slba >> 24) & 0xff;
+	tf->lbah = (slba >> 16) & 0xff;
+	tf->lbam = (slba >> 8) & 0xff;
+	tf->lbal = slba & 0xff;
+
+	tf->feature = 0x00;
+	tf->hob_feature = reporting_option;
+
+	alloc_len    /= 512; /* bytes in scsi, blocks in ata */
+	tf->nsect     = alloc_len & 0xff;
+	tf->hob_nsect = alloc_len >> 8;
+
+	ata_qc_set_pc_nbytes(qc);
+
+	return 0;
+
+ invalid_fld:
+	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x24, 0x0);
+	/* "Invalid field in cbd" */
+	return 1;
+ out_of_range:
+	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x21, 0x0);
+	/* LBA out of range */
+	return 1;
+}
+
 
 /**
  *	scsi_6_lba_len - Get LBA and transfer length
@@ -2249,12 +2404,17 @@ static unsigned int ata_scsiop_inq_b1(struct ata_scsi_args *args, u8 *rbuf)
 {
 	int form_factor = ata_id_form_factor(args->id);
 	int media_rotation_rate = ata_id_rotation_rate(args->id);
+	bool zac_ha = ata_drive_zac_ha(args->id);
 
 	rbuf[1] = 0xb1;
 	rbuf[3] = 0x3c;
 	rbuf[4] = media_rotation_rate >> 8;
 	rbuf[5] = media_rotation_rate;
 	rbuf[7] = form_factor;
+	if (zac_ha) {
+		rbuf[8] &= 0xcf;
+		rbuf[8] |= 0x10;  /* SBC4: 0x01 for zoned host aware device */
+	}
 
 	return 0;
 }
@@ -3431,6 +3591,13 @@ static inline ata_xlat_func_t ata_get_xlat_func(struct ata_device *dev, u8 cmd)
 
 	case START_STOP:
 		return ata_scsi_start_stop_xlat;
+
+	case ZONE_COMMAND:
+		return ata_scsi_zone_command_xlat;
+
+	case REPORT_ZONES:
+		return ata_scsi_report_zones_xlat;
+	  break;
 	}
 
 	return NULL;
