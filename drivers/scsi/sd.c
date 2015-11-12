@@ -45,6 +45,7 @@
 #include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/blkpg.h>
+#include <linux/blk-zoned-ctrl.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/string_helpers.h>
@@ -1329,6 +1330,24 @@ static int sd_ioctl(struct block_device *bdev, fmode_t mode,
 		case SCSI_IOCTL_GET_IDLUN:
 		case SCSI_IOCTL_GET_BUS_NUMBER:
 			error = scsi_ioctl(sdp, cmd, p);
+			break;
+		case SCSI_IOCTL_INQUIRY:
+			error = _inquiry_ioctl(disk, p);
+			break;
+		case SCSI_IOCTL_CLOSE_ZONE:
+			error = _zone_close_ioctl(disk, arg);
+			break;
+		case SCSI_IOCTL_FINISH_ZONE:
+			error = _zone_finish_ioctl(disk, arg);
+			break;
+		case SCSI_IOCTL_OPEN_ZONE:
+			error = _zone_open_ioctl(disk, arg);
+			break;
+		case SCSI_IOCTL_RESET_WP:
+			error = _reset_wp_ioctl(disk, arg);
+			break;
+		case SCSI_IOCTL_REPORT_ZONES:
+			error = _report_zones_ioctl(disk, p);
 			break;
 		default:
 			error = scsi_cmd_blk_ioctl(bdev, mode, cmd, p);
