@@ -305,6 +305,17 @@ enum {
 	/* marked obsolete in the ATA/ATAPI-7 spec */
 	ATA_CMD_RESTORE		= 0x10,
 
+	/* ZAC commands - need update when ZAC spec is available */
+	ATA_CMD_ZONE_MAN_OUT	= 0x9F,
+
+	ATA_SUBCMD_CLOSE_ZONES	= 0x01,
+	ATA_SUBCMD_FINISH_ZONES	= 0x02,
+	ATA_SUBCMD_OPEN_ZONES	= 0x03,
+	ATA_SUBCMD_RESET_WP	= 0x04,
+
+	ATA_CMD_ZONE_MAN_IN	= 0x4A,
+	ATA_SUBCMD_REP_ZONES	= 0x00,
+
 	/* Subcmds for ATA_CMD_FPDMA_SEND */
 	ATA_SUBCMD_FPDMA_SEND_DSM            = 0x00,
 	ATA_SUBCMD_FPDMA_SEND_WR_LOG_DMA_EXT = 0x02,
@@ -897,6 +908,13 @@ static inline bool ata_drive_40wire_relaxed(const u16 *dev_id)
 	if ((dev_id[ATA_ID_HW_CONFIG] & 0x2000) == 0x2000)
 		return false;	/* 80 wire */
 	return true;
+}
+
+static inline bool ata_drive_zac_ha(const u16 *dev_id)
+{
+	if ((dev_id[69] & 0x0003) == 0x0001)
+		return true;
+	return false;
 }
 
 static inline int atapi_cdb_len(const u16 *dev_id)
