@@ -11058,6 +11058,14 @@ L:	zd1211-devs@lists.sourceforge.net (subscribers-only)
 S:	Maintained
 F:	drivers/net/wireless/zd1211rw/
 
+ZONED BLOCK DEVICE CONTROL SUPPORT
+M:	Shaun Tancheff <shaun.tancheff@seagate.com>
+L:	linux-fsdevel@vger.kernel.org
+S:	Maintained
+F:	block/blk-zoned-ctrl.c
+F:	include/linux/blk-zoned-ctrl.h
+F:	include/uapi/linux/blk-zoned-ctrl.h
+
 ZR36067 VIDEO FOR LINUX DRIVER
 L:	mjpeg-users@lists.sourceforge.net
 L:	linux-media@vger.kernel.org
