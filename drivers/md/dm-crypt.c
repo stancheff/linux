@@ -1136,6 +1136,7 @@ static void clone_init(struct dm_crypt_io *io, struct bio *clone)
 	clone->bi_private = io;
 	clone->bi_end_io  = crypt_endio;
 	clone->bi_bdev    = cc->dev->bdev;
+	clone->bi_op      = io->base_bio->bi_op;
 	clone->bi_rw      = io->base_bio->bi_rw;
 }
 
