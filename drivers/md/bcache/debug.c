@@ -52,6 +52,7 @@ void bch_btree_verify(struct btree *b)
 	bio->bi_bdev		= PTR_CACHE(b->c, &b->key, 0)->bdev;
 	bio->bi_iter.bi_sector	= PTR_OFFSET(&b->key, 0);
 	bio->bi_iter.bi_size	= KEY_SIZE(&v->key) << 9;
+	bio->bi_op		= REQ_OP_READ;
 	bio->bi_rw		= REQ_META|READ_SYNC;
 	bch_bio_map(bio, sorted);
 
@@ -114,6 +115,7 @@ void bch_data_verify(struct cached_dev *dc, struct bio *bio)
 	check = bio_clone(bio, GFP_NOIO);
 	if (!check)
 		return;
+	check->bi_op = REQ_OP_READ;
 	check->bi_rw |= READ_SYNC;
 
 	if (bio_alloc_pages(check, GFP_NOIO))

@@ -253,7 +253,7 @@ static void bch_data_insert_start(struct closure *cl)
 		trace_bcache_cache_insert(k);
 		bch_keylist_push(&op->insert_keys);
 
-		n->bi_rw |= REQ_WRITE;
+		n->bi_op = REQ_OP_WRITE;
 		bch_submit_bbio(n, op->c, k, 0);
 	} while (n != bio);
 
@@ -383,7 +383,7 @@ static bool check_should_bypass(struct cached_dev *dc, struct bio *bio)
 
 	if (mode == CACHE_MODE_NONE ||
 	    (mode == CACHE_MODE_WRITEAROUND &&
-	     (bio->bi_rw & REQ_WRITE)))
+	     op_is_write(bio->bi_op)))
 		goto skip;
 
 	if (bio->bi_iter.bi_sector & (c->sb.block_size - 1) ||
@@ -404,7 +404,7 @@ static bool check_should_bypass(struct cached_dev *dc, struct bio *bio)
 
 	if (!congested &&
 	    mode == CACHE_MODE_WRITEBACK &&
-	    (bio->bi_rw & REQ_WRITE) &&
+	    op_is_write(bio->bi_op) &&
 	    (bio->bi_rw & REQ_SYNC))
 		goto rescale;
 
@@ -657,7 +657,7 @@ static inline struct search *search_alloc(struct bio *bio,
 	s->cache_miss		= NULL;
 	s->d			= d;
 	s->recoverable		= 1;
-	s->write		= (bio->bi_rw & REQ_WRITE) != 0;
+	s->write		= op_is_write(bio->bi_op);
 	s->read_dirty_data	= 0;
 	s->start_time		= jiffies;
 
@@ -925,6 +925,7 @@ static void cached_dev_write(struct cached_dev *dc, struct search *s)
 			struct bio *flush = bio_alloc_bioset(GFP_NOIO, 0,
 							     dc->disk.bio_split);
 
+			flush->bi_op	= REQ_OP_WRITE;
 			flush->bi_rw	= WRITE_FLUSH;
 			flush->bi_bdev	= bio->bi_bdev;
 			flush->bi_end_io = request_endio;
