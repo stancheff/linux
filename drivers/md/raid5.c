@@ -933,6 +933,8 @@ again:
 			rrdev = NULL;
 		}
 		if (rw & WRITE) {
+			if (i == sh->pd_idx || i == sh->qd_idx)
+				rw |= REQ_META;
 			if (replace_only)
 				rdev = NULL;
 			if (rdev == rrdev)
