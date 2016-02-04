@@ -6912,7 +6912,8 @@ static int run(struct mddev *mddev)
 			 * if the sysadmin has confirmed that only safe devices
 			 * are in use by setting a module parameter.
 			 */
-			if (!devices_handle_discard_safely) {
+			if (!devices_handle_discard_safely &&
+			    !bdev_discard_raid_safe(rdev->bdev)) {
 				if (discard_supported) {
 					pr_info("md/raid456: discard support disabled due to uncertainty.\n");
 					pr_info("Set raid456.devices_handle_discard_safely=Y to override.\n");
