@@ -1807,6 +1807,10 @@ static void zoned_io_hints(struct dm_target *ti, struct queue_limits *limits)
 		blk_limits_io_min(limits, 0);
 		blk_limits_io_opt(limits, 8 << SECTOR_SHIFT);
 	}
+
+	/* NOTE: set discard stuff here */
+	limits->raid_discard_safe = 1;
+
 }
 
 /* -------------------------------------------------------------------------- */
