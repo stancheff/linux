@@ -1,0 +1,72 @@
+ZDM: A Host Aware ZBC/ZAC Device Mapper
+  - Expected zone size 256MiB
+  - ZAC/ZBC support Reset WP, Open Zone, Close Zone, Report Zones
+
+ZDM allows Host Aware and Host Managed drives to appear as
+normal block devices to devices and filesystesm above it.
+
+Currently the ZDM must be the bottom most DM layer. THis will
+be addressed in a future release.
+
+The initial implementation focuses on drives with same sized zones of
+256MB which is 65536 4k blocks. In future the zone size of 256MB will
+be relaxed to allow any size of zone as long as they are all,
+or mostly, the same size.
+
+Internally all addressing is on 4k boundaries. Currently a 4k PAGE_SIZE is
+assumed. Architectures with 8k (or other) PAGE_SIZE have not been tested
+and are likly broken at the moment.
+
+Host Managed drives are expected to work however they have not yet
+been tested.
+
+Required Conventional/Host Aware space: 0.1 percent is required and
+0.2 percent is recommened. A future release my address using much
+fewer conventional zones (1 or 2 zones per partition/drive).
+
+
+Stream Id Support
+	ZDM supports 255 stream ids for the purpose of co-locating
+	data that is expected to have similar life-times. On
+	ingress to a zone a stream id affinity is created. All
+	futher writes to the same stream id will write to the same
+	zone, until it is filled.
+
+	The device mapper internally is a COW device with a 4k per block
+	addressing scheme. There are some fix-ups to handle non-4k aligned
+	requests to support applications which read and write in 512 byte
+	blocks, however it is still desirable to submit patches for these
+	subsystems assuming the respective maintainers are willing to
+	accept 4k alignment patches.
+
+Address space:
+	The zoned device mapper presents a smaller block device than
+	the amount of data available on the physical media. The extra
+	space is used to hold the meta data needed for managing the
+	data being stored on the drive performing COW block [re]mapping.
+	The 'shrink' is done by appropriately sizing the device via
+	dmsetup.
+	See the zdmadm utility will detect and size the device appropriaty.
+
+Map Strategy:
+	Map incoming sector onto device mapper sector space.
+
+Read Strategy:
+	Check each block requested in the bio to determine if the data
+	blocks are consecutively stored on disk. Pass as much per-bio
+	as possible through to the backing block device.
+
+Write Strategy:
+	Allocate space for entire bio on the backing block device
+	redirecting all incoming write requests to the most recently
+	written zone until the zone is filled or the bio is too large
+	to fit and a new zone is opened. Note that if the zone is not
+	filled this zone will likely become used by meta data writes
+	which are typically single blocks.
+
+Sync Strategy:
+	On SYNC bios all the meta data need to restore the zoned device
+	mapper for disk is written to one of the well known zones at
+	the beginning of the mega zone. Data consistency is only
+	'guaranteed' to be on-disk and consistent following sync
+	events [same as ext4].
