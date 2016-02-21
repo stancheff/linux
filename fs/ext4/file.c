@@ -318,6 +318,7 @@ static int ext4_file_open(struct inode * inode, struct file * filp)
 	char buf[64], *cp;
 	int ret;
 
+	inode->pid = get_current()->pid;
 	if (unlikely(!(sbi->s_mount_flags & EXT4_MF_MNTDIR_SAMPLED) &&
 		     !(sb->s_flags & MS_RDONLY))) {
 		sbi->s_mount_flags |= EXT4_MF_MNTDIR_SAMPLED;

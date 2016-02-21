@@ -102,12 +102,26 @@ static void zdm_remove_proc_entries(struct zoned *znd);
  */
 static inline u32 bio_stream(struct bio *bio)
 {
+	u32 stream_id = 0x40;
+
 	/*
 	 * Since adding stream id to a BIO is not yet in mainline we just
-	 * assign some defaults: use stream_id 0xff for upper level meta data
-	 * and 0x40 for everything else ...
+	 * use this heuristic to try to skip unnecessary co-mingling of data.
 	 */
-	return (bio->bi_rw & REQ_META) ? 0xff : 0x40;
+
+	if (bio->bi_rw & REQ_META)
+		stream_id = 0xff;
+	else {
+		u32 upid = bio->pid;
+
+		stream_id = ((upid/97) + (upid/1031) + (upid)) & 0xff;
+		if (stream_id == 0)
+			stream_id++;
+		if (stream_id == 0xff)
+			stream_id--;
+	}
+
+	return stream_id;
 }
 
 /**

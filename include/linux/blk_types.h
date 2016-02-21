@@ -71,6 +71,7 @@ struct bio {
 	bio_end_io_t		*bi_end_io;
 
 	void			*bi_private;
+
 #ifdef CONFIG_BLK_CGROUP
 	/*
 	 * Optional ioc and css associated with this bio.  Put on bio
@@ -84,6 +85,12 @@ struct bio {
 		struct bio_integrity_payload *bi_integrity; /* data integrity */
 #endif
 	};
+
+/*
+ * SST: HACK: most recent process id to open a file is held via BIO
+ *      for later use as *stream_id*.
+ */
+	pid_t			pid;
 
 	unsigned short		bi_vcnt;	/* how many bio_vec's */
 

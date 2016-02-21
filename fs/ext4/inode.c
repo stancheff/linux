@@ -1884,6 +1884,7 @@ static int ext4_writepage(struct page *page,
 		return __ext4_journalled_writepage(page, len);
 
 	ext4_io_submit_init(&io_submit, wbc);
+	io_submit.pid = inode->pid;
 	io_submit.io_end = ext4_init_io_end(inode, GFP_NOFS);
 	if (!io_submit.io_end) {
 		redirty_page_for_writepage(wbc, page);
@@ -2509,6 +2510,7 @@ static int ext4_writepages(struct address_space *mapping,
 	mpd.inode = inode;
 	mpd.wbc = wbc;
 	ext4_io_submit_init(&mpd.io_submit, wbc);
+	mpd.io_submit.pid = inode->pid;
 retry:
 	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
 		tag_pages_for_writeback(mapping, mpd.first_page, mpd.last_page);
@@ -2562,6 +2564,8 @@ retry:
 			}
 		}
 		ext4_journal_stop(handle);
+		if (mpd.io_submit.io_bio)
+			mpd.io_submit.io_bio->pid = inode->pid;
 		/* Submit prepared bio */
 		ext4_io_submit(&mpd.io_submit);
 		/* Unlock pages we didn't use */

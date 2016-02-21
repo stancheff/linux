@@ -192,6 +192,7 @@ struct ext4_io_submit {
 	struct bio		*io_bio;
 	ext4_io_end_t		*io_end;
 	sector_t		io_next_block;
+	pid_t			pid;
 };
 
 /*

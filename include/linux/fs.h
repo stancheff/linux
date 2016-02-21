@@ -676,6 +676,12 @@ struct inode {
 	struct hlist_head	i_fsnotify_marks;
 #endif
 
+/*
+ * SST: HACK most recent process id to open a file is held
+ *      via inode for passing to BIO.
+ */
+	pid_t			pid;
+
 	void			*i_private; /* fs or device private pointer */
 };
 

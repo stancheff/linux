@@ -584,6 +584,7 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	bio->bi_rw = bio_src->bi_rw;
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
+	bio->pid = bio_src->pid;
 }
 EXPORT_SYMBOL(__bio_clone_fast);
 
@@ -666,6 +667,7 @@ struct bio *bio_clone_bioset(struct bio *bio_src, gfp_t gfp_mask,
 	bio->bi_rw		= bio_src->bi_rw;
 	bio->bi_iter.bi_sector	= bio_src->bi_iter.bi_sector;
 	bio->bi_iter.bi_size	= bio_src->bi_iter.bi_size;
+	bio->pid		= bio_src->pid;
 
 	if (bio->bi_rw & REQ_DISCARD)
 		goto integrity_clone;
