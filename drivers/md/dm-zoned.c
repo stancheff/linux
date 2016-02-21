@@ -1938,6 +1938,7 @@ static void zoned_io_hints(struct dm_target *ti, struct queue_limits *limits)
 		limits->max_discard_sectors = 1 << 30;
 		limits->max_hw_discard_sectors = 1 << 30;
 		limits->discard_zeroes_data = 1;
+		limits->raid_discard_safe = 1;
 	}
 }
 
