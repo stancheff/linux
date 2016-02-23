@@ -153,9 +153,10 @@ typedef void (dax_iodone_t)(struct buffer_head *bh_map, int uptodate);
 #define CHECK_IOVEC_ONLY -1
 
 /*
- * The below are the various read and write types that we support. Some of
+ * The below are the various read and write flags that we support. Some of
  * them include behavioral modifiers that send information down to the
- * block layer and IO scheduler. Terminology:
+ * block layer and IO scheduler. They should be used along with a req_op.
+ * Terminology:
  *
  *	The block layer uses device plugging to defer IO a little bit, in
  *	the hope that we will see more IO very shortly. This increases
@@ -194,19 +195,19 @@ typedef void (dax_iodone_t)(struct buffer_head *bh_map, int uptodate);
  *			non-volatile media on completion.
  *
  */
-#define RW_MASK			REQ_WRITE
+#define RW_MASK			REQ_OP_WRITE
 #define RWA_MASK		REQ_RAHEAD
 
-#define READ			0
+#define READ			REQ_OP_READ
 #define WRITE			RW_MASK
 #define READA			RWA_MASK
 
-#define READ_SYNC		(READ | REQ_SYNC)
-#define WRITE_SYNC		(WRITE | REQ_SYNC | REQ_NOIDLE)
-#define WRITE_ODIRECT		(WRITE | REQ_SYNC)
-#define WRITE_FLUSH		(WRITE | REQ_SYNC | REQ_NOIDLE | REQ_FLUSH)
-#define WRITE_FUA		(WRITE | REQ_SYNC | REQ_NOIDLE | REQ_FUA)
-#define WRITE_FLUSH_FUA		(WRITE | REQ_SYNC | REQ_NOIDLE | REQ_FLUSH | REQ_FUA)
+#define READ_SYNC		REQ_SYNC
+#define WRITE_SYNC		(REQ_SYNC | REQ_NOIDLE)
+#define WRITE_ODIRECT		REQ_SYNC
+#define WRITE_FLUSH		(REQ_SYNC | REQ_NOIDLE | REQ_FLUSH)
+#define WRITE_FUA		(REQ_SYNC | REQ_NOIDLE | REQ_FUA)
+#define WRITE_FLUSH_FUA		(REQ_SYNC | REQ_NOIDLE | REQ_FLUSH | REQ_FUA)
 
 /*
  * Attribute flags.  These should be or-ed together to figure out what

@@ -151,7 +151,6 @@ struct bio {
  */
 enum rq_flag_bits {
 	/* common flags */
-	__REQ_WRITE,		/* not set, read. set, write */
 	__REQ_FAILFAST_DEV,	/* no driver retries of device errors */
 	__REQ_FAILFAST_TRANSPORT, /* no driver retries of transport errors */
 	__REQ_FAILFAST_DRIVER,	/* no driver retries of driver errors */
@@ -159,9 +158,7 @@ enum rq_flag_bits {
 	__REQ_SYNC,		/* request is sync (sync write or read) */
 	__REQ_META,		/* metadata io request */
 	__REQ_PRIO,		/* boost priority in cfq */
-	__REQ_DISCARD,		/* request to discard sectors */
-	__REQ_SECURE,		/* secure discard (used with __REQ_DISCARD) */
-	__REQ_WRITE_SAME,	/* write same block many times */
+	__REQ_SECURE,		/* secure discard (used with REQ_OP_DISCARD) */
 
 	__REQ_NOIDLE,		/* don't anticipate more IO after this one */
 	__REQ_INTEGRITY,	/* I/O includes block integrity payload */
@@ -197,27 +194,21 @@ enum rq_flag_bits {
 	__REQ_NR_BITS,		/* stops here */
 };
 
-#define REQ_WRITE		(1ULL << __REQ_WRITE)
 #define REQ_FAILFAST_DEV	(1ULL << __REQ_FAILFAST_DEV)
 #define REQ_FAILFAST_TRANSPORT	(1ULL << __REQ_FAILFAST_TRANSPORT)
 #define REQ_FAILFAST_DRIVER	(1ULL << __REQ_FAILFAST_DRIVER)
 #define REQ_SYNC		(1ULL << __REQ_SYNC)
 #define REQ_META		(1ULL << __REQ_META)
 #define REQ_PRIO		(1ULL << __REQ_PRIO)
-#define REQ_DISCARD		(1ULL << __REQ_DISCARD)
-#define REQ_WRITE_SAME		(1ULL << __REQ_WRITE_SAME)
 #define REQ_NOIDLE		(1ULL << __REQ_NOIDLE)
 #define REQ_INTEGRITY		(1ULL << __REQ_INTEGRITY)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
 #define REQ_COMMON_MASK \
-	(REQ_WRITE | REQ_FAILFAST_MASK | REQ_SYNC | REQ_META | REQ_PRIO | \
-	 REQ_DISCARD | REQ_WRITE_SAME | REQ_NOIDLE | REQ_FLUSH | REQ_FUA | \
-	 REQ_SECURE | REQ_INTEGRITY)
+	(REQ_FAILFAST_MASK | REQ_SYNC | REQ_META | REQ_PRIO | REQ_NOIDLE | \
+	 REQ_FLUSH | REQ_FUA | REQ_SECURE | REQ_INTEGRITY)
 #define REQ_CLONE_MASK		REQ_COMMON_MASK
-
-#define BIO_NO_ADVANCE_ITER_MASK	(REQ_DISCARD|REQ_WRITE_SAME)
 
 /* This mask is used for both bio and request merge checking */
 #define REQ_NOMERGE_FLAGS \
@@ -250,9 +241,9 @@ enum rq_flag_bits {
 
 enum req_op {
 	REQ_OP_READ,
-	REQ_OP_WRITE		= REQ_WRITE,
-	REQ_OP_DISCARD		= REQ_DISCARD,
-	REQ_OP_WRITE_SAME	= REQ_WRITE_SAME,
+	REQ_OP_WRITE,
+	REQ_OP_DISCARD,		/* request to discard sectors */
+	REQ_OP_WRITE_SAME,	/* write same block many times */
 };
 
 typedef unsigned int blk_qc_t;
