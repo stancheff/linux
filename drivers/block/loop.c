@@ -536,7 +536,7 @@ static int do_req_filebacked(struct loop_device *lo, struct request *rq)
 	pos = ((loff_t) blk_rq_pos(rq) << 9) + lo->lo_offset;
 
 	if (op_is_write(rq->op)) {
-		if (rq->cmd_flags & REQ_FLUSH)
+		if (rq->op == REQ_OP_FLUSH)
 			ret = lo_req_flush(lo, rq);
 		else if (rq->op == REQ_OP_DISCARD)
 			ret = lo_discard(lo, rq, pos);
@@ -1653,7 +1653,7 @@ static int loop_queue_rq(struct blk_mq_hw_ctx *hctx,
 	if (lo->lo_state != Lo_bound)
 		return -EIO;
 
-	if (lo->use_dio && (!(cmd->rq->cmd_flags & REQ_FLUSH) ||
+	if (lo->use_dio && (cmd->rq->op != REQ_OP_FLUSH ||
 	     cmd->rq->op == REQ_OP_DISCARD))
 		cmd->use_aio = true;
 	else

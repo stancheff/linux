@@ -3,7 +3,7 @@
 
 static inline bool mmc_req_is_special(struct request *req)
 {
-	return req && (req->cmd_flags & REQ_FLUSH || req->op == REQ_OP_DISCARD);
+	return req && (req->op == REQ_OP_FLUSH || req->op == REQ_OP_DISCARD);
 }
 
 struct request;

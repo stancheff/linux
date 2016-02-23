@@ -223,6 +223,8 @@ static void __blk_add_trace(struct blk_trace *bt, sector_t sector, int bytes,
 	what |= MASK_TC_BIT(op_flags, FUA);
 	if (op == REQ_OP_DISCARD)
 		what |= BLK_TC_ACT(BLK_TC_DISCARD);
+	if (op == REQ_OP_FLUSH)
+		what |= BLK_TC_ACT(BLK_TC_FLUSH);
 
 	pid = tsk->pid;
 	if (act_log_check(bt, what, sector, pid))
@@ -1775,7 +1777,8 @@ void blk_fill_rwbs(char *rwbs, int op, u32 rw, int bytes)
 {
 	int i = 0;
 
-	if (rw & REQ_FLUSH)
+	if (rw & REQ_FLUSH ||
+	    op == REQ_OP_FLUSH)
 		rwbs[i++] = 'F';
 
 	if (op == REQ_OP_WRITE)
