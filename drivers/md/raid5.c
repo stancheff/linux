@@ -1006,9 +1006,9 @@ again:
 				: raid5_end_read_request;
 			bi->bi_private = sh;
 
-			pr_debug("%s: for %llu schedule op %ld on disc %d\n",
+			pr_debug("%s: for %llu schedule op %d,%u on disc %d\n",
 				__func__, (unsigned long long)sh->sector,
-				bi->bi_rw, i);
+				bi->bi_op, bi->bi_rw, i);
 			atomic_inc(&sh->count);
 			if (sh != head_sh)
 				atomic_inc(&head_sh->count);
@@ -1058,10 +1058,10 @@ again:
 			rbi->bi_end_io = raid5_end_write_request;
 			rbi->bi_private = sh;
 
-			pr_debug("%s: for %llu schedule op %ld on "
+			pr_debug("%s: for %llu schedule op %d,%u on "
 				 "replacement disc %d\n",
 				__func__, (unsigned long long)sh->sector,
-				rbi->bi_rw, i);
+				rbi->bi_op, rbi->bi_rw, i);
 			atomic_inc(&sh->count);
 			if (sh != head_sh)
 				atomic_inc(&head_sh->count);
@@ -1093,8 +1093,9 @@ again:
 		if (!rdev && !rrdev) {
 			if (op_is_write(op))
 				set_bit(STRIPE_DEGRADED, &sh->state);
-			pr_debug("skip op %ld on disc %d for sector %llu\n",
-				bi->bi_rw, i, (unsigned long long)sh->sector);
+			pr_debug("skip op %d,%u on disc %d for sector %llu\n",
+				 bi->bi_op, bi->bi_rw, i,
+				 (unsigned long long)sh->sector);
 			clear_bit(R5_LOCKED, &sh->dev[i].flags);
 			set_bit(STRIPE_HANDLE, &sh->state);
 		}
