@@ -8300,7 +8300,7 @@ static int btrfs_submit_direct_hook(int rw, struct btrfs_dio_private *dip,
 	int i;
 
 	map_length = orig_bio->bi_iter.bi_size;
-	ret = btrfs_map_block(root->fs_info, rw, start_sector << 9,
+	ret = btrfs_map_block(root->fs_info, orig_bio->bi_op, start_sector << 9,
 			      &map_length, NULL, 0);
 	if (ret)
 		return -EIO;
