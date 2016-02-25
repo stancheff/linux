@@ -109,8 +109,9 @@ static void __submit_merged_bio(struct f2fs_bio_info *io)
 		trace_f2fs_submit_read_bio(io->sbi->sb, fio, io->bio);
 	else
 		trace_f2fs_submit_write_bio(io->sbi->sb, fio, io->bio);
+	io->bio->bi_rw = fio->rw;
 
-	submit_bio(fio->rw, io->bio);
+	submit_bio(io->bio);
 	io->bio = NULL;
 }
 
@@ -227,8 +228,9 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 		bio_put(bio);
 		return -EFAULT;
 	}
+	bio->bi_rw = fio->rw;
 
-	submit_bio(fio->rw, bio);
+	submit_bio(bio);
 	return 0;
 }
 
@@ -983,7 +985,7 @@ got_it:
 		 */
 		if (bio && (last_block_in_bio != block_nr - 1)) {
 submit_and_realloc:
-			submit_bio(READ, bio);
+			submit_bio(bio);
 			bio = NULL;
 		}
 		if (bio == NULL) {
@@ -1012,6 +1014,7 @@ submit_and_realloc:
 			bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(block_nr);
 			bio->bi_end_io = f2fs_read_end_io;
 			bio->bi_private = ctx;
+			bio->bi_rw = READ;
 		}
 
 		if (bio_add_page(bio, page, blocksize, 0) < blocksize)
@@ -1026,7 +1029,7 @@ set_error_page:
 		goto next_page;
 confused:
 		if (bio) {
-			submit_bio(READ, bio);
+			submit_bio(bio);
 			bio = NULL;
 		}
 		unlock_page(page);
@@ -1036,7 +1039,7 @@ next_page:
 	}
 	BUG_ON(pages && !list_empty(pages));
 	if (bio)
-		submit_bio(READ, bio);
+		submit_bio(bio);
 	return 0;
 }
 
