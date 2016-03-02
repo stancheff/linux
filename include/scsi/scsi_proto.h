@@ -115,6 +115,10 @@
 #define VERIFY_16	      0x8f
 #define SYNCHRONIZE_CACHE_16  0x91
 #define WRITE_SAME_16	      0x93
+/* Op codes for Zoned Block Commands */
+#define ZBC_ACTION		0x94
+#define ZBC_REPORT_ZONES	0x95
+
 #define SERVICE_ACTION_BIDIRECTIONAL 0x9d
 #define SERVICE_ACTION_IN_16  0x9e
 #define SERVICE_ACTION_OUT_16 0x9f
@@ -156,6 +160,16 @@
 /* Values for T10/04-262r7 */
 #define	ATA_16		      0x85	/* 16-byte pass-thru */
 #define	ATA_12		      0xa1	/* 12-byte pass-thru */
+
+/* ZBC_ACTION: Values for T-10 ZBC sub action */
+#define ZBC_SA_ZONE_CLOSE	0x01
+#define ZBC_SA_ZONE_FINISH	0x02
+#define ZBC_SA_ZONE_OPEN	0x03
+#define ZBC_SA_RESET_WP		0x04
+
+/* ZBC_REPORT_ZONES: Default report option. T-10 ZBC report zones */
+#define ZBC_REPORT_OPT		0x00
+
 
 /* Vendor specific CDBs start here */
 #define VENDOR_SPECIFIC_CDB 0xc0
