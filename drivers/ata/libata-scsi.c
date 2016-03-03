@@ -1518,85 +1518,6 @@ static unsigned int ata_scsi_zone_command_xlat(struct ata_queued_cmd *qc)
 }
 
 /**
- *	ata_scsi_report_zones_xlat - Translate SCSI Report Zones command
- *	@qc: Storage for translated ATA taskfile
- *
- *	Sets up an ATA taskfile to issue Report Zones Ext command.
- *	May need change when zac specs is updated.
- *
- *	LOCKING:
- *	spin_lock_irqsave(host lock)
- *
- *	RETURNS:
- *	Zero on success, non-zero on error.
- */
-static unsigned int ata_scsi_report_zones_xlat(struct ata_queued_cmd *qc)
-{
-	struct ata_device *dev = qc->dev;
-	struct scsi_cmnd *scmd = qc->scsicmd;
-	struct ata_taskfile *tf = &qc->tf;
-	const u8 *cdb = scmd->cmnd;
-	u64 max_lba = dev->n_sectors;     /* Maximal LBA supported */
-	u64 slba;       /* Start LBA in scsi command */
-	u32 alloc_len;  /* Alloc length (in bytes) */
-	u8 reporting_option;
-
-	if (scmd->cmd_len < 16) {
-		ata_dev_err(dev, "ZAC Error: Command length is less than 16\n");
-		goto invalid_fld;
-	}
-	if (unlikely(!dev->dma_mode)) {
-		ata_dev_err(dev, "ZAC Error: No DMA mode is set\n");
-		goto invalid_fld;
-	}
-	if (!scsi_sg_count(scmd)) {
-		ata_dev_err(dev, "ZAC Error: SCSI sg count is zero\n");
-		goto invalid_fld;
-	}
-	scsi_16_lba_len(cdb, &slba, &alloc_len);
-	if (slba > max_lba) {
-		ata_dev_err(dev, "Zone start LBA %llu > %llu (Max LBA)\n",
-			    slba, max_lba);
-		goto out_of_range;
-	}
-
-	reporting_option = cdb[14] & 0x3f;
-
-	tf->flags |= ATA_TFLAG_DEVICE | ATA_TFLAG_LBA48 | ATA_TFLAG_ISADDR;
-	tf->protocol = ATA_PROT_DMA;
-
-	tf->command = ATA_CMD_ZONE_MAN_IN;
-
-	tf->hob_lbah = (slba >> 40) & 0xff;
-	tf->hob_lbam = (slba >> 32) & 0xff;
-	tf->hob_lbal = (slba >> 24) & 0xff;
-	tf->lbah = (slba >> 16) & 0xff;
-	tf->lbam = (slba >> 8) & 0xff;
-	tf->lbal = slba & 0xff;
-
-	tf->feature = 0x00;
-	tf->hob_feature = reporting_option;
-
-	alloc_len    /= 512; /* bytes in scsi, blocks in ata */
-	tf->nsect     = alloc_len & 0xff;
-	tf->hob_nsect = alloc_len >> 8;
-
-	ata_qc_set_pc_nbytes(qc);
-
-	return 0;
-
- invalid_fld:
-	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x24, 0x0);
-	/* "Invalid field in cbd" */
-	return 1;
- out_of_range:
-	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x21, 0x0);
-	/* LBA out of range */
-	return 1;
-}
-
-
-/**
  *	scsi_6_lba_len - Get LBA and transfer length
  *	@cdb: SCSI command to translate
  *
@@ -1948,6 +1869,156 @@ static void ata_scsi_qc_complete(struct ata_queued_cmd *qc)
 		ata_dump_status(ap->print_id, &qc->result_tf);
 
 	ata_qc_done(qc);
+}
+
+/*
+ * ata_scsi_report_zones_complete
+ *
+ * Convert T-13 little-endian field representation into
+ * T-10 big-endian field representation.
+ */
+static void ata_scsi_report_zones_complete(struct ata_queued_cmd *qc)
+{
+	struct scsi_cmnd *scmd = qc->scsicmd;
+	struct sg_mapping_iter miter;
+	unsigned long flags;
+	unsigned int bytes = 0;
+
+	sg_miter_start(&miter, scsi_sglist(scmd), scsi_sg_count(scmd),
+		       SG_MITER_TO_SG | SG_MITER_ATOMIC);
+
+	local_irq_save(flags);
+	while (sg_miter_next(&miter)) {
+		unsigned int offset = 0;
+
+		if (bytes == 0) {
+			char *hdr;
+			u32 list_length;
+			u64 max_lba, opt_lba;
+			u16 same;
+
+			/* Swizzle header */
+			hdr = miter.addr;
+			list_length = get_unaligned_le32(&hdr[0]);
+			same = get_unaligned_le16(&hdr[4]);
+			max_lba = get_unaligned_le64(&hdr[8]);
+			opt_lba = get_unaligned_le64(&hdr[16]);
+			put_unaligned_be32(list_length, &hdr[0]);
+			hdr[4] = same & 0xf;
+			put_unaligned_be64(max_lba, &hdr[8]);
+			put_unaligned_be64(opt_lba, &hdr[16]);
+			offset += 64;
+			bytes += 64;
+		}
+		while (offset < miter.length) {
+			char *rec;
+			u16 option;
+			u8 cond, type, reset;
+			u64 size, start, wp, checkpoint;
+
+			/* Swizzle zone descriptor */
+			rec = miter.addr + offset;
+			option = get_unaligned_le16(&rec[0]);
+			cond = (option >> 4) & 0xf;
+			type = (option >> 8) & 0xf;
+			reset = (option & 1);
+			size = get_unaligned_le64(&rec[8]);
+			start = get_unaligned_le64(&rec[16]);
+			wp = get_unaligned_le64(&rec[24]);
+			checkpoint = get_unaligned_le64(&rec[32]);
+			put_unaligned_be64(size, &rec[8]);
+			put_unaligned_be64(start, &rec[16]);
+			put_unaligned_be64(wp, &rec[24]);
+			put_unaligned_be64(checkpoint, &rec[32]);
+			WARN_ON(offset + 64 > miter.length);
+			offset += 64;
+			bytes += 64;
+		}
+	}
+	sg_miter_stop(&miter);
+	local_irq_restore(flags);
+
+	ata_scsi_qc_complete(qc);
+}
+
+/**
+ *	ata_scsi_report_zones_xlat - Translate SCSI Report Zones command
+ *	@qc: Storage for translated ATA taskfile
+ *
+ *	Sets up an ATA taskfile to issue Report Zones Ext command.
+ *	May need change when zac specs is updated.
+ *
+ *	LOCKING:
+ *	spin_lock_irqsave(host lock)
+ *
+ *	RETURNS:
+ *	Zero on success, non-zero on error.
+ */
+static unsigned int ata_scsi_report_zones_xlat(struct ata_queued_cmd *qc)
+{
+	struct ata_device *dev = qc->dev;
+	struct scsi_cmnd *scmd = qc->scsicmd;
+	struct ata_taskfile *tf = &qc->tf;
+	const u8 *cdb = scmd->cmnd;
+	u64 max_lba = dev->n_sectors;     /* Maximal LBA supported */
+	u64 slba;       /* Start LBA in scsi command */
+	u32 alloc_len;  /* Alloc length (in bytes) */
+	u8 reporting_option;
+
+	if (scmd->cmd_len < 16) {
+		ata_dev_err(dev, "ZAC Error: Command length is less than 16\n");
+		goto invalid_fld;
+	}
+	if (unlikely(!dev->dma_mode)) {
+		ata_dev_err(dev, "ZAC Error: No DMA mode is set\n");
+		goto invalid_fld;
+	}
+	if (!scsi_sg_count(scmd)) {
+		ata_dev_err(dev, "ZAC Error: SCSI sg count is zero\n");
+		goto invalid_fld;
+	}
+	scsi_16_lba_len(cdb, &slba, &alloc_len);
+	if (slba > max_lba) {
+		ata_dev_err(dev, "Zone start LBA %llu > %llu (Max LBA)\n",
+			    slba, max_lba);
+		goto out_of_range;
+	}
+
+	reporting_option = cdb[14] & 0x3f;
+
+	tf->flags |= ATA_TFLAG_DEVICE | ATA_TFLAG_LBA48 | ATA_TFLAG_ISADDR;
+	tf->protocol = ATA_PROT_DMA;
+
+	tf->command = ATA_CMD_ZONE_MAN_IN;
+
+	tf->hob_lbah = (slba >> 40) & 0xff;
+	tf->hob_lbam = (slba >> 32) & 0xff;
+	tf->hob_lbal = (slba >> 24) & 0xff;
+	tf->lbah = (slba >> 16) & 0xff;
+	tf->lbam = (slba >> 8) & 0xff;
+	tf->lbal = slba & 0xff;
+
+	tf->feature = 0x00;
+	tf->hob_feature = reporting_option;
+
+	alloc_len    /= 512; /* bytes in scsi, blocks in ata */
+	tf->nsect     = alloc_len & 0xff;
+	tf->hob_nsect = alloc_len >> 8;
+
+	ata_qc_set_pc_nbytes(qc);
+
+	qc->complete_fn = ata_scsi_report_zones_complete;
+
+	return 0;
+
+ invalid_fld:
+	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x24, 0x0);
+	/* "Invalid field in cbd" */
+	return 1;
+ out_of_range:
+	ata_scsi_set_sense(scmd, ILLEGAL_REQUEST, 0x21, 0x0);
+	/* LBA out of range */
+	return 1;
 }
 
 /**

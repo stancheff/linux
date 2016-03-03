@@ -97,6 +97,8 @@
 		 ata_opcode_name(ATA_CMD_CFA_WRITE_MULT_NE),	\
 		 ata_opcode_name(ATA_CMD_REQ_SENSE_DATA),	\
 		 ata_opcode_name(ATA_CMD_SANITIZE_DEVICE),	\
+		 ata_opcode_name(ATA_CMD_ZONE_MAN_IN),		\
+		 ata_opcode_name(ATA_CMD_ZONE_MAN_OUT),		\
 		 ata_opcode_name(ATA_CMD_RESTORE),		\
 		 ata_opcode_name(ATA_CMD_READ_LONG),		\
 		 ata_opcode_name(ATA_CMD_READ_LONG_ONCE),	\
