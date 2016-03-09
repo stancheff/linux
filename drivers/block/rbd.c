@@ -3371,7 +3371,7 @@ static void rbd_queue_workfn(struct work_struct *work)
 		goto err;
 	}
 
-	if (rq->cmd_flags & REQ_DISCARD)
+	if (rq->op == REQ_OP_DISCARD)
 		op_type = OBJ_OP_DISCARD;
 	else if (rq->cmd_flags & REQ_WRITE)
 		op_type = OBJ_OP_WRITE;
