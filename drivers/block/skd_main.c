@@ -4409,7 +4409,8 @@ static int skd_cons_disk(struct skd_device *skdev)
 	disk->queue = q;
 	q->queuedata = skdev;
 
-	blk_queue_flush(q, REQ_FLUSH | REQ_FUA);
+	queue_flag_set_unlocked(QUEUE_FLAG_FLUSH, q);
+	queue_flag_set_unlocked(QUEUE_FLAG_FUA, q);
 	blk_queue_max_segments(q, skdev->sgs_per_request);
 	blk_queue_max_hw_sectors(q, SKD_N_MAX_SECTORS);
 

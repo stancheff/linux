@@ -437,7 +437,7 @@ static int osdblk_init_disk(struct osdblk_device *osdev)
 	blk_queue_stack_limits(q, osd_request_queue(osdev->osd));
 
 	blk_queue_prep_rq(q, blk_queue_start_tag);
-	blk_queue_flush(q, REQ_FLUSH);
+	queue_flag_set_unlocked(QUEUE_FLAG_FLUSH, q);
 
 	disk->queue = q;
 

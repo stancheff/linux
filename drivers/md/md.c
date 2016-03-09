@@ -5041,7 +5041,8 @@ static int md_alloc(dev_t dev, char *name)
 	disk->fops = &md_fops;
 	disk->private_data = mddev;
 	disk->queue = mddev->queue;
-	blk_queue_flush(mddev->queue, REQ_FLUSH | REQ_FUA);
+	queue_flag_set_unlocked(QUEUE_FLAG_FLUSH, mddev->queue);
+	queue_flag_set_unlocked(QUEUE_FLAG_FUA, mddev->queue);
 	/* Allow extended partitions.  This makes the
 	 * 'mdp' device redundant, but we can't really
 	 * remove it now.

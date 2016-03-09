@@ -693,9 +693,9 @@ static void nbd_parse_flags(struct nbd_device *nbd, struct block_device *bdev)
 	if (nbd->flags & NBD_FLAG_SEND_TRIM)
 		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, nbd->disk->queue);
 	if (nbd->flags & NBD_FLAG_SEND_FLUSH)
-		blk_queue_flush(nbd->disk->queue, REQ_FLUSH);
+		queue_flag_set_unlocked(QUEUE_FLAG_FLUSH, nbd->disk->queue);
 	else
-		blk_queue_flush(nbd->disk->queue, 0);
+		queue_flag_clear_unlocked(QUEUE_FLAG_FLUSH, nbd->disk->queue);
 }
 
 static int nbd_dev_dbg_init(struct nbd_device *nbd);

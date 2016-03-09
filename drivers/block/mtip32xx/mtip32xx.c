@@ -4027,7 +4027,8 @@ skip_create_disk:
 	 * write back cache is not supported in the device. FUA depends on
 	 * write back cache support, hence setting flush support to zero.
 	 */
-	blk_queue_flush(dd->queue, 0);
+	queue_flag_clear_unlocked(QUEUE_FLAG_FLUSH, dd->queue);
+	queue_flag_clear_unlocked(QUEUE_FLAG_FUA, dd->queue);
 
 	/* Signal trim support */
 	if (dd->trim_supp == true) {

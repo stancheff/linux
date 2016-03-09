@@ -477,7 +477,7 @@ static int xen_vbd_create(struct xen_blkif *blkif, blkif_vdev_t handle,
 		vbd->type |= VDISK_REMOVABLE;
 
 	q = bdev_get_queue(bdev);
-	if (q && q->flush_flags)
+	if (q && (blk_queue_flush(q) || blk_queue_fua(q)))
 		vbd->flush_support = true;
 
 	if (q && blk_queue_secdiscard(q))

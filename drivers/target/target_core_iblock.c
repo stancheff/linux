@@ -691,11 +691,11 @@ iblock_execute_rw(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 		 * Force writethrough using WRITE_FUA if a volatile write cache
 		 * is not enabled, or if initiator set the Force Unit Access bit.
 		 */
-		if (q->flush_flags & REQ_FUA) {
+		if (blk_queue_fua(q)) {
 			if (cmd->se_cmd_flags & SCF_FUA) {
 				op = REQ_OP_WRITE;
 				op_flags = WRITE_FUA;
-			} else if (!(q->flush_flags & REQ_FLUSH)) {
+			} else if (!blk_queue_flush(q)) {
 				op = REQ_OP_WRITE;
 				op_flags = WRITE_FUA;
 			} else {
@@ -844,7 +844,7 @@ static bool iblock_get_write_cache(struct se_device *dev)
 	struct block_device *bd = ib_dev->ibd_bd;
 	struct request_queue *q = bdev_get_queue(bd);
 
-	return q->flush_flags & REQ_FLUSH;
+	return blk_queue_flush(q);
 }
 
 static const struct target_backend_ops iblock_ops = {

@@ -137,15 +137,18 @@ static const char *sd_cache_types[] = {
 
 static void sd_set_flush_flag(struct scsi_disk *sdkp)
 {
-	unsigned flush = 0;
+	struct request_queue *q = sdkp->disk->queue;
 
 	if (sdkp->WCE) {
-		flush |= REQ_FLUSH;
+		queue_flag_set_unlocked(QUEUE_FLAG_FLUSH, q);
 		if (sdkp->DPOFUA)
-			flush |= REQ_FUA;
+			queue_flag_set_unlocked(QUEUE_FLAG_FUA, q);
+		else
+			queue_flag_clear_unlocked(QUEUE_FLAG_FUA, q);
+	} else {
+		queue_flag_clear_unlocked(QUEUE_FLAG_FUA, q);
+		queue_flag_clear_unlocked(QUEUE_FLAG_FLUSH, q);
 	}
-
-	blk_queue_flush(sdkp->disk->queue, flush);
 }
 
 static ssize_t

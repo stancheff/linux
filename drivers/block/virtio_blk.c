@@ -494,9 +494,9 @@ static void virtblk_update_cache_mode(struct virtio_device *vdev)
 	struct virtio_blk *vblk = vdev->priv;
 
 	if (writeback)
-		blk_queue_flush(vblk->disk->queue, REQ_FLUSH);
+		queue_flag_set_unlocked(QUEUE_FLAG_FLUSH, vblk->disk->queue);
 	else
-		blk_queue_flush(vblk->disk->queue, 0);
+		queue_flag_clear_unlocked(QUEUE_FLAG_FLUSH, vblk->disk->queue);
 
 	revalidate_disk(vblk->disk);
 }

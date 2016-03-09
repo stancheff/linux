@@ -903,8 +903,10 @@ static void nvme_set_queue_limits(struct nvme_ctrl *ctrl,
 	}
 	if (ctrl->stripe_size)
 		blk_queue_chunk_sectors(q, ctrl->stripe_size >> 9);
-	if (ctrl->vwc & NVME_CTRL_VWC_PRESENT)
-		blk_queue_flush(q, REQ_FLUSH | REQ_FUA);
+	if (ctrl->vwc & NVME_CTRL_VWC_PRESENT) {
+		queue_flag_set_unlocked(QUEUE_FLAG_FLUSH, q);
+		queue_flag_set_unlocked(QUEUE_FLAG_FUA, q);
+	}
 	blk_queue_virt_boundary(q, ctrl->page_size - 1);
 }
 
