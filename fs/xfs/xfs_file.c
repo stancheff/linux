@@ -1058,6 +1058,7 @@ xfs_file_open(
 		return -EFBIG;
 	if (XFS_FORCED_SHUTDOWN(XFS_M(inode->i_sb)))
 		return -EIO;
+	inode->pid = get_current()->pid;
 	return 0;
 }
 

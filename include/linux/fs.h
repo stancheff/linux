@@ -32,6 +32,7 @@
 #include <linux/workqueue.h>
 #include <linux/percpu-rwsem.h>
 #include <linux/delayed_call.h>
+#include <linux/hash.h>
 
 #include <asm/byteorder.h>
 #include <uapi/linux/fs.h>
@@ -678,15 +679,20 @@ struct inode {
 	__u32			i_fsnotify_mask; /* all events this inode cares about */
 	struct hlist_head	i_fsnotify_marks;
 #endif
+	pid_t			pid; /* use PID for fallback streamid */
 
 	void			*i_private; /* fs or device private pointer */
 };
 
 static inline unsigned int inode_streamid(struct inode *inode)
 {
-	if (inode)
-		return inode->i_streamid;
+	if (inode) {
+		if (inode->i_streamid)
+			return inode->i_streamid;
 
+		return ((hash_32(inode->pid, 8) << 8)
+			|hash_32(inode->i_ino, 8));
+	}
 	return 0;
 }
 
