@@ -21,6 +21,7 @@
 #include <linux/string.h>
 #include <linux/module.h>
 #include <linux/blkdev.h>
+#include <linux/blk-zoned-ctrl.h>
 #include <linux/capability.h>
 #include <linux/completion.h>
 #include <linux/cdrom.h>
@@ -705,6 +706,11 @@ int scsi_verify_blk_ioctl(struct block_device *bd, unsigned int cmd)
 	case SG_GET_RESERVED_SIZE:
 	case SG_SET_RESERVED_SIZE:
 	case SG_EMULATED_HOST:
+	case SCSI_IOCTL_INQUIRY:
+	case SCSI_IOCTL_REPORT_ZONES:
+	case SCSI_IOCTL_RESET_WP:
+	case SCSI_IOCTL_OPEN_ZONE:
+	case SCSI_IOCTL_CLOSE_ZONE:
 		return 0;
 	case CDROM_GET_CAPABILITY:
 		/* Keep this until we remove the printk below.  udev sends it

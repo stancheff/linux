@@ -113,6 +113,18 @@ config BLK_DEV_THROTTLING
 
 	See Documentation/cgroups/blkio-controller.txt for more information.
 
+config BLK_ZONED_CTRL
+	bool "DEPRECATED. Support sending zac/zbc commands..."
+	default y
+	---help---
+	Support sending close/finish/open/reset wp, and report zones
+	to zoned based devices. Support sending ZAC/ZBC commands to
+	block devices.
+
+	Say yes here if you have a storage device that is has T10 ZBC
+	or T13 ZAC command support for zoned based storage.
+	If in doubt, say N.
+
 config BLK_CMDLINE_PARSER
 	bool "Block device command line partition parser"
 	default n
