@@ -626,7 +626,7 @@ static void write_callback(unsigned long error, void *context)
 	 * If the bio is discard, return an error, but do not
 	 * degrade the array.
 	 */
-	if (bio->bi_rw & REQ_DISCARD) {
+	if (bio->bi_op == REQ_OP_DISCARD) {
 		bio->bi_error = -EOPNOTSUPP;
 		bio_endio(bio);
 		return;
@@ -665,7 +665,7 @@ static void do_write(struct mirror_set *ms, struct bio *bio)
 		.client = ms->io_client,
 	};
 
-	if (bio->bi_rw & REQ_DISCARD) {
+	if (bio->bi_op == REQ_OP_DISCARD) {
 		io_req.bi_op = REQ_OP_DISCARD;
 		io_req.mem.type = DM_IO_KMEM;
 		io_req.mem.ptr.addr = NULL;
@@ -705,7 +705,7 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 
 	while ((bio = bio_list_pop(writes))) {
 		if ((bio->bi_rw & REQ_FLUSH) ||
-		    (bio->bi_rw & REQ_DISCARD)) {
+		    (bio->bi_op == REQ_OP_DISCARD)) {
 			bio_list_add(&sync, bio);
 			continue;
 		}
@@ -1253,7 +1253,7 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio, int error)
 	 * We need to dec pending if this was a write.
 	 */
 	if (rw == WRITE) {
-		if (!(bio->bi_rw & (REQ_FLUSH | REQ_DISCARD)))
+		if (!(bio->bi_rw & REQ_FLUSH) && bio->bi_op != REQ_OP_DISCARD)
 			dm_rh_dec(ms->rh, bio_record->write_region);
 		return error;
 	}

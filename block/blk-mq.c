@@ -170,8 +170,7 @@ static void blk_mq_rq_ctx_init(struct request_queue *q, struct blk_mq_ctx *ctx,
 	rq->q = q;
 	rq->mq_ctx = ctx;
 	rq->op = op;
-	/* tmp compat - allow users to check either one for the op */
-	rq->cmd_flags |= op | op_flags;
+	rq->cmd_flags |= op_flags;
 	/* do not touch atomic flags, it needs atomic ops against the timer */
 	rq->cpu = -1;
 	INIT_HLIST_NODE(&rq->hash);

@@ -557,7 +557,7 @@ static int log_writes_map(struct dm_target *ti, struct bio *bio)
 	int i = 0;
 	bool flush_bio = (bio->bi_rw & REQ_FLUSH);
 	bool fua_bio = (bio->bi_rw & REQ_FUA);
-	bool discard_bio = (bio->bi_rw & REQ_DISCARD);
+	bool discard_bio = (bio->bi_op == REQ_OP_DISCARD);
 
 	pb->block = NULL;
 

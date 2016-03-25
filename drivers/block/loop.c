@@ -447,7 +447,7 @@ static int lo_req_flush(struct loop_device *lo, struct request *rq)
 
 static inline void handle_partial_read(struct loop_cmd *cmd, long bytes)
 {
-	if (bytes < 0 || (cmd->rq->cmd_flags & REQ_WRITE))
+	if (bytes < 0 || op_is_write(cmd->rq->op))
 		return;
 
 	if (unlikely(bytes < blk_rq_bytes(cmd->rq))) {
@@ -535,7 +535,7 @@ static int do_req_filebacked(struct loop_device *lo, struct request *rq)
 
 	pos = ((loff_t) blk_rq_pos(rq) << 9) + lo->lo_offset;
 
-	if (rq->cmd_flags & REQ_WRITE) {
+	if (op_is_write(rq->op)) {
 		if (rq->cmd_flags & REQ_FLUSH)
 			ret = lo_req_flush(lo, rq);
 		else if (rq->op == REQ_OP_DISCARD)
@@ -1666,7 +1666,7 @@ static int loop_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 static void loop_handle_cmd(struct loop_cmd *cmd)
 {
-	const bool write = cmd->rq->cmd_flags & REQ_WRITE;
+	const bool write = op_is_write(cmd->rq->op);
 	struct loop_device *lo = cmd->rq->q->queuedata;
 	int ret = 0;
 
