@@ -1151,8 +1151,7 @@ static struct request *__get_request(struct request_list *rl, int op,
 
 	blk_rq_init(q, rq);
 	blk_rq_set_rl(rq, rl);
-	/* tmp compat - allow users to check either one for the op */
-	rq->cmd_flags = op | op_flags | REQ_ALLOCED;
+	rq->cmd_flags = op_flags | REQ_ALLOCED;
 	rq->op = op;
 
 	/* init elvpriv */
@@ -1704,8 +1703,7 @@ void init_request_from_bio(struct request *req, struct bio *bio)
 {
 	req->cmd_type = REQ_TYPE_FS;
 
-	/* tmp compat. Allow users to set bi_op or bi_rw */
-	req->cmd_flags |= (bio->bi_rw | bio->bi_op) & REQ_COMMON_MASK;
+	req->cmd_flags |= bio->bi_rw & REQ_COMMON_MASK;
 	if (bio->bi_rw & REQ_RAHEAD)
 		req->cmd_flags |= REQ_FAILFAST_MASK;
 
@@ -1855,9 +1853,9 @@ static void handle_bad_sector(struct bio *bio)
 	char b[BDEVNAME_SIZE];
 
 	printk(KERN_INFO "attempt to access beyond end of device\n");
-	printk(KERN_INFO "%s: rw=%ld, want=%Lu, limit=%Lu\n",
+	printk(KERN_INFO "%s: rw=%d,%ld, want=%Lu, limit=%Lu\n",
 			bdevname(bio->bi_bdev, b),
-			bio->bi_rw,
+			bio->bi_op, bio->bi_rw,
 			(unsigned long long)bio_end_sector(bio),
 			(long long)(i_size_read(bio->bi_bdev->bd_inode) >> 9));
 }
@@ -1978,14 +1976,14 @@ generic_make_request_checks(struct bio *bio)
 		}
 	}
 
-	if ((bio->bi_rw & REQ_DISCARD) &&
+	if ((bio->bi_op == REQ_OP_DISCARD) &&
 	    (!blk_queue_discard(q) ||
 	     ((bio->bi_rw & REQ_SECURE) && !blk_queue_secdiscard(q)))) {
 		err = -EOPNOTSUPP;
 		goto end_io;
 	}
 
-	if (bio->bi_rw & REQ_WRITE_SAME && !bdev_write_same(bio->bi_bdev)) {
+	if (bio->bi_op == REQ_OP_WRITE_SAME && !bdev_write_same(bio->bi_bdev)) {
 		err = -EOPNOTSUPP;
 		goto end_io;
 	}
@@ -2038,12 +2036,6 @@ blk_qc_t generic_make_request(struct bio *bio)
 {
 	struct bio_list bio_list_on_stack;
 	blk_qc_t ret = BLK_QC_T_NONE;
-
-	/* tmp compat. Allow users to set either one or both.
-	 * This will be removed when we have converted
-	 * everyone in the next patches.
-	 */
-	bio->bi_rw |= bio->bi_op;
 
 	if (!generic_make_request_checks(bio))
 		goto out;
@@ -2114,12 +2106,6 @@ EXPORT_SYMBOL(generic_make_request);
  */
 blk_qc_t submit_bio(struct bio *bio)
 {
-	/* tmp compat. Allow users to set either one or both.
-	 * This will be removed when we have converted
-	 * everyone in the next patches.
-	 */
-	bio->bi_rw |= bio->bi_op;
-
 	/*
 	 * If it's a regular read/write or a barrier with data attached,
 	 * go through the normal accounting stuff before submission.
@@ -2127,12 +2113,12 @@ blk_qc_t submit_bio(struct bio *bio)
 	if (bio_has_data(bio)) {
 		unsigned int count;
 
-		if (unlikely(bio->bi_rw & REQ_WRITE_SAME))
+		if (unlikely(bio->bi_op == REQ_OP_WRITE_SAME))
 			count = bdev_logical_block_size(bio->bi_bdev) >> 9;
 		else
 			count = bio_sectors(bio);
 
-		if (bio->bi_rw & WRITE) {
+		if (op_is_write(bio->bi_op)) {
 			count_vm_events(PGPGOUT, count);
 		} else {
 			task_io_account_read(bio->bi_iter.bi_size);
@@ -2143,7 +2129,7 @@ blk_qc_t submit_bio(struct bio *bio)
 			char b[BDEVNAME_SIZE];
 			printk(KERN_DEBUG "%s(%d): %s block %Lu on %s (%u sectors)\n",
 			current->comm, task_pid_nr(current),
-				(bio->bi_rw & WRITE) ? "WRITE" : "READ",
+				op_is_write(bio->bi_op) ? "WRITE" : "READ",
 				(unsigned long long)bio->bi_iter.bi_sector,
 				bdevname(bio->bi_bdev, b),
 				count);
@@ -2993,8 +2979,6 @@ EXPORT_SYMBOL_GPL(__blk_end_request_err);
 void blk_rq_bio_prep(struct request_queue *q, struct request *rq,
 		     struct bio *bio)
 {
-	/* tmp compat. Allow users to set bi_op or bi_rw */
-	rq->cmd_flags |= bio_data_dir(bio);
 	rq->op = bio->bi_op;
 
 	if (bio_has_data(bio))

@@ -2452,33 +2452,24 @@ static inline bool op_is_write(int op)
 }
 
 /*
- * return READ, READA, or WRITE
- */
-static inline int bio_rw(struct bio *bio)
-{
-	/*
-	 * tmp cpmpat. Allow users to set either op or rw, until
-	 * all code is converted in the next patches.
-	 */
-	if (op_is_write(bio->bi_op))
-		return WRITE;
-
-	return bio->bi_rw & (RW_MASK | RWA_MASK);
-}
-
-/*
  * return data direction, READ or WRITE
  */
 static inline int bio_data_dir(struct bio *bio)
 {
-	/*
-	 * tmp cpmpat. Allow users to set either op or rw, until
-	 * all code is converted in the next patches.
-	 */
 	if (op_is_write(bio->bi_op))
 		return WRITE;
+	return READ;
+}
 
-	return bio->bi_rw & 1;
+/*
+ * return READ, READA, or WRITE
+ */
+static inline int bio_rw(struct bio *bio)
+{
+	if (bio->bi_rw & RWA_MASK)
+		return READA;
+
+	return bio_data_dir(bio);
 }
 
 extern void check_disk_size_change(struct gendisk *disk,
