@@ -1805,6 +1805,8 @@ static inline int prep_to_mq(int ret)
 		return 0;
 	case BLKPREP_DEFER:
 		return BLK_MQ_RQ_QUEUE_BUSY;
+	case BLKPREP_DONE:
+		return BLK_MQ_RQ_QUEUE_DONE;
 	default:
 		return BLK_MQ_RQ_QUEUE_ERROR;
 	}
@@ -1948,6 +1950,7 @@ out:
 			blk_mq_delay_queue(hctx, SCSI_QUEUE_DELAY);
 		break;
 	case BLK_MQ_RQ_QUEUE_ERROR:
+	case BLK_MQ_RQ_QUEUE_DONE:
 		/*
 		 * Make sure to release all allocated ressources when
 		 * we hit an error, as we will never see this command
