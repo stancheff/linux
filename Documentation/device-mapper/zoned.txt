@@ -1,0 +1,75 @@
+Overview of Host Aware ZBC/ZAC Device Mapper
+  - Zone size (256MiB)
+  - Reset WP, Open Zone, Close Zone, Get Zone Info ...
+
+The Zoned DM treats a zoned device as a collection of 1024 zones 256GiB,
+referred to internally as 'megazones' as with zoned devices the last
+megazone may be less than 1024 zones in size. If the last zone is of
+different size it is ignored.
+
+What that means is that drives which report SAME=0 are not supported
+and likely won't be supported within this architecture. However drives
+which report a SAME code of: all same, last differs or same length
+different types, would all be supported by this architecture.
+
+The initial implementation focuses on drives with same sized zones of
+256MB which is 65536 4k blocks. In future the zone size of 256MB will
+be relaxed to allow any size of zone as long as they are all the same.
+
+Internally all addressing is on 4k boundaries. Currently a 4k PAGE_SIZE is
+assumed. Architectures with 8k (or other) PAGE_SIZE have not been tested
+and are likly broken at the moment.
+
+Host Managed drives should work if the zone type at the start of the partition
+is Conventional, or Preferred.
+
+
+Megazones:
+	Each megazone is managed independently and partitioned into
+	meta data and data. The Device Mapper Meta Data is logically
+	located in the 2nd and 3rd zones of the megazone. The 1st and
+	2nd zones are reserved for the megazone's minimally relocatable
+	super block which must be the first block of the first or
+	second zone. The most recent is determined by the generation
+	number embedded in the super block. The meta data is sized
+	for two zones and logically located in sectors non-addressable
+	to the upper device. The actual storage of the meta data is pooled
+	with the data using the same mapping scheme.
+	The device mapper internally is a COW device with a 4k per block
+	addressing scheme. There are some fix-ups to handle non-4k aligned
+	requests to support applications which read and write in 512 byte
+	blocks, however it is still desirable to submit patches for these
+	subsystems assuming the respective maintainers are willing to
+	accept 4k alignment patches.
+
+Address space:
+	The zoned device mapper presents a smaller block device than
+	the amount of data available on the physical media. The extra
+	space is used to hold the meta data needed for managing the
+	data being stored on the drive performing COW block [re]mapping.
+	The 'shrink' is done by appropriately sizing the device via
+	dmsetup.
+	See the zdmadm utility will detect and size the device appropriaty.
+
+Map Strategy:
+	Map incoming sector onto device mapper sector space.
+
+Read Strategy:
+	Check each block requested in the bio to determine if the data
+	blocks are consecutively stored on disk. Pass as much per-bio
+	as possible through to the backing block device.
+
+Write Strategy:
+	Allocate space for entire bio on the backing block device
+	redirecting all incoming write requests to the most recently
+	written zone until the zone is filled or the bio is too large
+	to fit and a new zone is opened. Note that if the zone is not
+	filled this zone will likely become used by meta data writes
+	which are typically single blocks.
+
+Sync Strategy:
+	On SYNC bios all the meta data need to restore the zoned device
+	mapper for disk is written to one of the well known zones at
+	the beginning of the mega zone. Data consistency is only
+	'guaranteed' to be on-disk and consistent following sync
+	events [same as ext4].
