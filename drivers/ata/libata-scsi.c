@@ -3504,7 +3504,10 @@ static unsigned int ata_scsi_zbc_out_xlat(struct ata_queued_cmd *qc)
 	/* Compatibility with ZBC r01 */
 	if (!sa)
 		sa = ZO_RESET_WRITE_POINTER;
-	if (sa != ZO_RESET_WRITE_POINTER) {
+	if (!(sa == ZO_CLOSE_ZONE ||
+	      sa == ZO_FINISH_ZONE ||
+	      sa == ZO_OPEN_ZONE ||
+	      sa == ZO_RESET_WRITE_POINTER)) {
 		fp = 1;
 		goto invalid_fld;
 	}
