@@ -932,6 +932,8 @@ again:
 			rrdev = NULL;
 		}
 		if (op_is_write(op)) {
+			if (i == sh->pd_idx || i == sh->qd_idx)
+				op_flags |= REQ_META;
 			if (replace_only)
 				rdev = NULL;
 			if (rdev == rrdev)
