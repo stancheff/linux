@@ -8439,6 +8439,7 @@ static void btrfs_submit_direct(struct bio *dio_bio, struct inode *inode,
 	atomic_set(&dip->pending_bios, 0);
 	btrfs_bio = btrfs_io_bio(io_bio);
 	btrfs_bio->logical = file_offset;
+	bio_set_streamid(io_bio, bio_get_streamid(dio_bio));
 
 	if (write) {
 		io_bio->bi_end_io = btrfs_endio_direct_write;
