@@ -2085,7 +2085,7 @@ static void ata_dev_config_ncq_send_recv(struct ata_device *dev)
 	unsigned int err_mask;
 
 	err_mask = ata_read_log_page(dev, ATA_LOG_NCQ_SEND_RECV,
-				     0, ap->sector_buf, 1);
+				     0, ap->sector_buf, 1, true);
 	if (err_mask) {
 		ata_dev_dbg(dev,
 			    "failed to get NCQ Send/Recv Log Emask 0x%x\n",
@@ -2383,8 +2383,7 @@ int ata_dev_configure(struct ata_device *dev)
 			err_mask = ata_read_log_page(dev,
 						     ATA_LOG_SATA_ID_DEV_DATA,
 						     ATA_LOG_SATA_SETTINGS,
-						     sata_setting,
-						     1);
+						     sata_setting, 1, true);
 			if (err_mask)
 				ata_dev_dbg(dev,
 					    "failed to get Identify Device Data, Emask 0x%x\n",
