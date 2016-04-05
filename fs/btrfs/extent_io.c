@@ -2805,6 +2805,7 @@ static int submit_extent_page(int op, int op_flags, struct extent_io_tree *tree,
 	bio->bi_private = tree;
 	bio->bi_op = op;
 	bio->bi_rw = op_flags;
+	bio_set_streamid(bio, inode_streamid(page->mapping->host));
 	if (wbc) {
 		wbc_init_bio(wbc, bio);
 		wbc_account_io(wbc, page, page_size);
