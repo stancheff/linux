@@ -1697,7 +1697,8 @@ void init_request_from_bio(struct request *req, struct bio *bio)
 {
 	req->cmd_type = REQ_TYPE_FS;
 
-	req->cmd_flags |= bio->bi_rw & REQ_COMMON_MASK;
+	/* tmp compat. Allow users to set bi_op or bi_rw */
+	req->cmd_flags |= (bio->bi_rw | bio->bi_op) & REQ_COMMON_MASK;
 	if (bio->bi_rw & REQ_RAHEAD)
 		req->cmd_flags |= REQ_FAILFAST_MASK;
 
@@ -2032,6 +2033,12 @@ blk_qc_t generic_make_request(struct bio *bio)
 	struct bio_list bio_list_on_stack;
 	blk_qc_t ret = BLK_QC_T_NONE;
 
+	/* tmp compat. Allow users to set either one or both.
+	 * This will be removed when we have converted
+	 * everyone in the next patches.
+	 */
+	bio->bi_rw |= bio->bi_op;
+
 	if (!generic_make_request_checks(bio))
 		goto out;
 
@@ -2101,6 +2108,12 @@ EXPORT_SYMBOL(generic_make_request);
  */
 blk_qc_t submit_bio(struct bio *bio)
 {
+	/* tmp compat. Allow users to set either one or both.
+	 * This will be removed when we have converted
+	 * everyone in the next patches.
+	 */
+	bio->bi_rw |= bio->bi_op;
+
 	/*
 	 * If it's a regular read/write or a barrier with data attached,
 	 * go through the normal accounting stuff before submission.
@@ -2974,8 +2987,8 @@ EXPORT_SYMBOL_GPL(__blk_end_request_err);
 void blk_rq_bio_prep(struct request_queue *q, struct request *rq,
 		     struct bio *bio)
 {
-	/* Bit 0 (R/W) is identical in rq->cmd_flags and bio->bi_rw */
-	rq->cmd_flags |= bio->bi_rw & REQ_WRITE;
+	/* tmp compat. Allow users to set bi_op or bi_rw */
+	rq->cmd_flags |= bio_data_dir(bio);
 
 	if (bio_has_data(bio))
 		rq->nr_phys_segments = bio_phys_segments(q, bio);

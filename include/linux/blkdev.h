@@ -96,6 +96,7 @@ struct request {
 	struct request_queue *q;
 	struct blk_mq_ctx *mq_ctx;
 
+	int op;
 	u64 cmd_flags;
 	unsigned cmd_type;
 	unsigned long atomic_flags;

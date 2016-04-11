@@ -48,9 +48,15 @@ struct bio {
 	struct block_device	*bi_bdev;
 	unsigned int		bi_flags;	/* status, command, etc */
 	int			bi_error;
-	unsigned long		bi_rw;		/* bottom bits READ/WRITE,
+	unsigned long		bi_rw;		/* bottom bits rq_flags_bits
 						 * top bits priority
 						 */
+	/*
+	 * this will be a u8 in the next patches and bi_rw can be shrunk to
+	 * a u32. For compat in these transistional patches op is a int here.
+	 */
+	int			bi_op;		/* REQ_OP */
+
 
 	struct bvec_iter	bi_iter;
 
@@ -241,6 +247,13 @@ enum rq_flag_bits {
 #define REQ_PM			(1ULL << __REQ_PM)
 #define REQ_HASHED		(1ULL << __REQ_HASHED)
 #define REQ_MQ_INFLIGHT		(1ULL << __REQ_MQ_INFLIGHT)
+
+enum req_op {
+	REQ_OP_READ,
+	REQ_OP_WRITE		= REQ_WRITE,
+	REQ_OP_DISCARD		= REQ_DISCARD,
+	REQ_OP_WRITE_SAME	= REQ_WRITE_SAME,
+};
 
 typedef unsigned int blk_qc_t;
 #define BLK_QC_T_NONE	-1U

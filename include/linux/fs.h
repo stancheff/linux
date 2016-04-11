@@ -2438,15 +2438,48 @@ extern void make_bad_inode(struct inode *);
 extern bool is_bad_inode(struct inode *);
 
 #ifdef CONFIG_BLOCK
+
+static inline bool op_is_write(int op)
+{
+	switch (op) {
+	case REQ_OP_WRITE:
+	case REQ_OP_WRITE_SAME:
+	case REQ_OP_DISCARD:
+		return true;
+	default:
+		return false;
+	}
+}
+
 /*
  * return READ, READA, or WRITE
  */
-#define bio_rw(bio)		((bio)->bi_rw & (RW_MASK | RWA_MASK))
+static inline int bio_rw(struct bio *bio)
+{
+	/*
+	 * tmp cpmpat. Allow users to set either op or rw, until
+	 * all code is converted in the next patches.
+	 */
+	if (op_is_write(bio->bi_op))
+		return WRITE;
+
+	return bio->bi_rw & (RW_MASK | RWA_MASK);
+}
 
 /*
  * return data direction, READ or WRITE
  */
-#define bio_data_dir(bio)	((bio)->bi_rw & 1)
+static inline int bio_data_dir(struct bio *bio)
+{
+	/*
+	 * tmp cpmpat. Allow users to set either op or rw, until
+	 * all code is converted in the next patches.
+	 */
+	if (op_is_write(bio->bi_op))
+		return WRITE;
+
+	return bio->bi_rw & 1;
+}
 
 extern void check_disk_size_change(struct gendisk *disk,
 				   struct block_device *bdev);
