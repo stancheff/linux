@@ -878,7 +878,7 @@ static int _write_mirror(struct ore_io_state *ios, int cur_comp)
 			} else {
 				bio = master_dev->bio;
 				/* FIXME: bio_set_dir() */
-				bio->bi_rw |= REQ_WRITE;
+				bio->bi_op = REQ_OP_WRITE;
 			}
 
 			osd_req_write(or, _ios_obj(ios, cur_comp),

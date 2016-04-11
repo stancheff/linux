@@ -1074,7 +1074,7 @@ static void pkt_gather_data(struct pktcdvd_device *pd, struct packet_data *pkt)
 			BUG();
 
 		atomic_inc(&pkt->io_wait);
-		bio->bi_rw = READ;
+		bio->bi_op = REQ_OP_READ;
 		pkt_queue_bio(pd, bio);
 		frames_read++;
 	}
@@ -1336,7 +1336,7 @@ static void pkt_start_write(struct pktcdvd_device *pd, struct packet_data *pkt)
 
 	/* Start the write request */
 	atomic_set(&pkt->io_wait, 1);
-	pkt->w_bio->bi_rw = WRITE;
+	pkt->w_bio->bi_op = REQ_OP_WRITE;
 	pkt_queue_bio(pd, pkt->w_bio);
 }
 

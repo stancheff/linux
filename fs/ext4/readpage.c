@@ -294,7 +294,7 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			bio->bi_iter.bi_sector = blocks[0] << (blkbits - 9);
 			bio->bi_end_io = mpage_end_io;
 			bio->bi_private = ctx;
-			bio->bi_rw = READ;
+			bio->bi_op = REQ_OP_READ;
 		}
 
 		length = first_hole << blkbits;
