@@ -1894,7 +1894,7 @@ static int btrfs_submit_bio_hook(struct inode *inode, int rw, struct bio *bio,
 	if (btrfs_is_free_space_inode(inode))
 		metadata = BTRFS_WQ_ENDIO_FREE_SPACE;
 
-	if (!(rw & REQ_WRITE)) {
+	if (bio->bi_op != REQ_OP_WRITE) {
 		ret = btrfs_bio_wq_end_io(root->fs_info, bio, metadata);
 		if (ret)
 			goto out;
@@ -7751,7 +7751,7 @@ static inline int submit_dio_repair_bio(struct inode *inode, struct bio *bio,
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	int ret;
 
-	BUG_ON(rw & REQ_WRITE);
+	BUG_ON(bio->bi_op == REQ_OP_WRITE);
 
 	bio_get(bio);
 
@@ -7811,7 +7811,7 @@ static int dio_read_error(struct inode *inode, struct bio *failed_bio,
 	int read_mode;
 	int ret;
 
-	BUG_ON(failed_bio->bi_rw & REQ_WRITE);
+	BUG_ON(failed_bio->bi_op == REQ_OP_WRITE);
 
 	ret = btrfs_get_io_failure_record(inode, start, end, &failrec);
 	if (ret)
@@ -7839,6 +7839,8 @@ static int dio_read_error(struct inode *inode, struct bio *failed_bio,
 		free_io_failure(inode, failrec);
 		return -EIO;
 	}
+	bio->bi_op = REQ_OP_READ;
+	bio->bi_rw = read_mode;
 
 	btrfs_debug(BTRFS_I(inode)->root->fs_info,
 		    "Repair DIO Read Error: submitting new dio read[%#x] to this_mirror=%d, in_validation=%d\n",
@@ -8153,8 +8155,8 @@ static void btrfs_end_dio_bio(struct bio *bio)
 
 	if (err)
 		btrfs_warn(BTRFS_I(dip->inode)->root->fs_info,
-			   "direct IO failed ino %llu rw %lu sector %#Lx len %u err no %d",
-			   btrfs_ino(dip->inode), bio->bi_rw,
+			   "direct IO failed ino %llu rw %d,%lu sector %#Lx len %u err no %d",
+			   btrfs_ino(dip->inode), bio->bi_op, bio->bi_rw,
 			   (unsigned long long)bio->bi_iter.bi_sector,
 			   bio->bi_iter.bi_size, err);
 
@@ -8232,7 +8234,7 @@ static inline int __btrfs_submit_dio_bio(struct bio *bio, struct inode *inode,
 					 int async_submit)
 {
 	struct btrfs_dio_private *dip = bio->bi_private;
-	int write = rw & REQ_WRITE;
+	bool write = bio->bi_op == REQ_OP_WRITE;
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	int ret;
 
@@ -8319,6 +8321,8 @@ static int btrfs_submit_direct_hook(int rw, struct btrfs_dio_private *dip,
 	if (!bio)
 		return -ENOMEM;
 
+	bio->bi_op = orig_bio->bi_op;
+	bio->bi_rw = orig_bio->bi_rw;
 	bio->bi_private = dip;
 	bio->bi_end_io = btrfs_end_dio_bio;
 	btrfs_io_bio(bio)->logical = file_offset;
@@ -8356,12 +8360,14 @@ next_block:
 						  start_sector, GFP_NOFS);
 			if (!bio)
 				goto out_err;
+			bio->bi_op = orig_bio->bi_op;
+			bio->bi_rw = orig_bio->bi_rw;
 			bio->bi_private = dip;
 			bio->bi_end_io = btrfs_end_dio_bio;
 			btrfs_io_bio(bio)->logical = file_offset;
 
 			map_length = orig_bio->bi_iter.bi_size;
-			ret = btrfs_map_block(root->fs_info, rw,
+			ret = btrfs_map_block(root->fs_info, orig_bio->bi_op,
 					      start_sector << 9,
 					      &map_length, NULL, 0);
 			if (ret) {
