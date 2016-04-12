@@ -2414,6 +2414,7 @@ static struct mapped_device *alloc_dev(int minor)
 
 	bio_init(&md->flush_bio);
 	md->flush_bio.bi_bdev = md->bdev;
+	md->flush_bio.bi_op = REQ_OP_WRITE;
 	md->flush_bio.bi_rw = WRITE_FLUSH;
 
 	dm_stats_init(&md->stats);

@@ -465,10 +465,10 @@ static void complete_io(unsigned long error, void *context)
 	io_job_finish(kc->throttle);
 
 	if (error) {
-		if (job->rw & WRITE)
-			job->write_err |= error;
-		else
+		if (job->rw == READ)
 			job->read_err = 1;
+		else
+			job->write_err |= error;
 
 		if (!test_bit(DM_KCOPYD_IGNORE_ERROR, &job->flags)) {
 			push(&kc->complete_jobs, job);
@@ -477,13 +477,11 @@ static void complete_io(unsigned long error, void *context)
 		}
 	}
 
-	if (job->rw & WRITE)
-		push(&kc->complete_jobs, job);
-
-	else {
+	if (job->rw == READ) {
 		job->rw = WRITE;
 		push(&kc->io_jobs, job);
-	}
+	} else
+		push(&kc->complete_jobs, job);
 
 	wake(kc);
 }
@@ -496,7 +494,8 @@ static int run_io_job(struct kcopyd_job *job)
 {
 	int r;
 	struct dm_io_request io_req = {
-		.bi_rw = job->rw,
+		.bi_op = job->rw,
+		.bi_op_flags = 0,
 		.mem.type = DM_IO_PAGE_LIST,
 		.mem.ptr.pl = job->pages,
 		.mem.offset = 0,
@@ -550,10 +549,10 @@ static int process_jobs(struct list_head *jobs, struct dm_kcopyd_client *kc,
 
 		if (r < 0) {
 			/* error this rogue job */
-			if (job->rw & WRITE)
-				job->write_err = (unsigned long) -1L;
-			else
+			if (job->rw == READ)
 				job->read_err = 1;
+			else
+				job->write_err = (unsigned long) -1L;
 			push(&kc->complete_jobs, job);
 			break;
 		}
@@ -734,7 +733,7 @@ int dm_kcopyd_copy(struct dm_kcopyd_client *kc, struct dm_io_region *from,
 		/*
 		 * Use WRITE SAME to optimize zeroing if all dests support it.
 		 */
-		job->rw = WRITE | REQ_WRITE_SAME;
+		job->rw = REQ_OP_WRITE_SAME;
 		for (i = 0; i < job->num_dests; i++)
 			if (!bdev_write_same(job->dests[i].bdev)) {
 				job->rw = WRITE;
