@@ -6001,7 +6001,7 @@ static noinline void btrfs_schedule_bio(struct btrfs_root *root,
 
 static void submit_stripe_bio(struct btrfs_root *root, struct btrfs_bio *bbio,
 			      struct bio *bio, u64 physical, int dev_nr,
-			      int rw, int async)
+			      int async)
 {
 	struct btrfs_device *dev = bbio->stripes[dev_nr].dev;
 
@@ -6046,7 +6046,7 @@ static void bbio_error(struct btrfs_bio *bbio, struct bio *bio, u64 logical)
 	}
 }
 
-int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
+int btrfs_map_bio(struct btrfs_root *root, struct bio *bio,
 		  int mirror_num, int async_submit)
 {
 	struct btrfs_device *dev;
@@ -6113,7 +6113,7 @@ int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
 			bio = first_bio;
 
 		submit_stripe_bio(root, bbio, bio,
-				  bbio->stripes[dev_nr].physical, dev_nr, rw,
+				  bbio->stripes[dev_nr].physical, dev_nr,
 				  async_submit);
 	}
 	btrfs_bio_counter_dec(root->fs_info);
