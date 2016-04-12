@@ -2989,6 +2989,7 @@ void blk_rq_bio_prep(struct request_queue *q, struct request *rq,
 {
 	/* tmp compat. Allow users to set bi_op or bi_rw */
 	rq->cmd_flags |= bio_data_dir(bio);
+	rq->op = bio->bi_op;
 
 	if (bio_has_data(bio))
 		rq->nr_phys_segments = bio_phys_segments(q, bio);
@@ -3073,6 +3074,7 @@ EXPORT_SYMBOL_GPL(blk_rq_unprep_clone);
 static void __blk_rq_prep_clone(struct request *dst, struct request *src)
 {
 	dst->cpu = src->cpu;
+	dst->op = src->op;
 	dst->cmd_flags |= (src->cmd_flags & REQ_CLONE_MASK) | REQ_NOMERGE;
 	dst->cmd_type = src->cmd_type;
 	dst->__sector = blk_rq_pos(src);
