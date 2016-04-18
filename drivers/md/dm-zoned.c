@@ -16,6 +16,7 @@
 #include <linux/dm-kcopyd.h>
 #include <linux/bitops.h>
 #include <linux/blktrace_api.h>
+#include <linux/blkzoned_api.h>
 #include <linux/vmalloc.h>
 
 #define DM_MSG_PREFIX "zoned"
@@ -28,6 +29,10 @@
 #define DM_ZONED_CACHE_HIGHWAT 10
 #define DM_ZONED_DEFAULT_IOS 256
 
+/* How much memory to chunk over during the zone report */
+#define REPORT_ORDER		7
+#define REPORT_FILL_PGS		65 /* 65 -> min # pages for 4096 descriptors */
+
 enum zoned_c_flags {
 	ZONED_CACHE_ATTACHED,	/* Cache attached */
 	ZONED_CACHE_FAILED,	/* Flush failed, cache remains dirty */
@@ -38,6 +43,52 @@ enum zoned_c_flags {
 	ZONED_CACHE_ACTIVE,	/* I/O active on the cache */
 	ZONED_CACHE_EVICT,	/* Cache selected for eviction */
 };
+
+enum blk_zone_type {
+	BLK_ZONE_TYPE_UNKNOWN,
+	BLK_ZONE_TYPE_CONVENTIONAL,
+	BLK_ZONE_TYPE_SEQWRITE_REQ,
+	BLK_ZONE_TYPE_SEQWRITE_PREF,
+	BLK_ZONE_TYPE_RESERVED,
+};
+
+enum blk_zone_state {
+	BLK_ZONE_UNKNOWN,
+	BLK_ZONE_NO_WP,
+	BLK_ZONE_OPEN,
+	BLK_ZONE_READONLY,
+	BLK_ZONE_OFFLINE,
+	BLK_ZONE_BUSY,
+};
+
+struct blk_zone {
+	spinlock_t lock;
+	unsigned type:4;
+	unsigned state:4;
+	unsigned wp:32;
+	void *private_data;
+};
+
+struct contiguous_wps {
+	u64 start_lba;
+	u64 last_lba;		/* or # of blocks */
+	u64 zone_size;		/* size in blocks */
+	u16 zone_block_order;	/* power of 2: 4k = 12 */
+	unsigned is_zoned:1;
+	u32 zone_count;
+	struct blk_zone zones[0];
+};
+
+struct zone_wps {
+	u32 wps_count;
+	struct contiguous_wps **wps;
+};
+
+#define blk_zone_is_smr(z) ((z)->type == BLK_ZONE_TYPE_SEQWRITE_REQ ||	\
+			    (z)->type == BLK_ZONE_TYPE_SEQWRITE_PREF)
+
+#define blk_zone_is_cmr(z) ((z)->type == BLK_ZONE_TYPE_CONVENTIONAL)
+#define blk_zone_is_empty(z) ((z)->wp == 0)
 
 /*
  * Zoned: caches a zone on top of a linear device.
@@ -65,6 +116,9 @@ struct zoned_context {
 	unsigned long cache_aligned_writes;
 	unsigned long disk_aligned_writes;
 	unsigned long disk_misaligned_writes;
+	unsigned ata_passthrough:1;
+	unsigned bdev_is_zoned:1;
+	struct zone_wps zones_info;
 };
 
 struct blk_zone_context {
@@ -76,6 +130,8 @@ struct blk_zone_context {
 	struct mutex cache_mutex;
 	void *cache;
 	size_t cache_size;
+	sector_t zone_start; /* zone starting lba */
+	sector_t zone_len;
 	struct blk_zone cache_zone;
 	unsigned long tstamp;
 	unsigned long wq_tstamp;
@@ -87,6 +143,24 @@ struct blk_zone_context {
 	struct completion read_complete;
 	struct completion *zeroout_complete;
 };
+
+static inline sector_t get_wp(struct blk_zone_context *ctx)
+{
+	return ctx->zone->wp + ctx->zone_start;
+}
+
+static inline sector_t get_cache_wp(struct blk_zone_context *ctx)
+{
+	return ctx->cache_zone.wp + ctx->zone_start;
+}
+
+struct blk_zone *blk_lookup_zone(struct zoned_context *zc, sector_t sector,
+				 sector_t *start, sector_t *len)
+{
+	*start = 0;
+	*len = 0x8000;
+	return NULL;
+}
 
 struct dm_zoned_info {
 	struct blk_zone_context *ctx;
@@ -103,15 +177,25 @@ static struct kmem_cache *_zoned_cache;
 static void read_zone_work(struct work_struct *work);
 static void flush_zone_work(struct work_struct *work);
 
+/* just to confirm amount of RAM used. */
+static size_t cache_in_use = 0;
+
 void *zoned_mempool_alloc_cache(gfp_t gfp_mask, void *pool_data)
 {
 	struct zoned_context *zc = pool_data;
+
+	cache_in_use += zc->cache_size;
+	pr_err("ZONED: Mem In Use: %lu\n", cache_in_use);
 
 	return vmalloc(zc->cache_size);
 }
 
 void zoned_mempool_free_cache(void *element, void *pool_data)
 {
+	struct zoned_context *zc = pool_data;
+
+	cache_in_use -= zc->cache_size;
+
 	vfree(element);
 }
 
@@ -139,7 +223,7 @@ static int zoned_mempool_create(struct zoned_context *zc)
 static void zoned_init_context(struct blk_zone_context *blk_ctx)
 {
 	memset(blk_ctx, 0, sizeof(struct blk_zone_context));
-	blk_ctx->cache_zone.start = -1;
+	blk_ctx->zone_start = -1;
 	blk_ctx->cache_zone.wp = -1;
 	kref_init(&blk_ctx->ref);
 	mutex_init(&blk_ctx->cache_mutex);
@@ -162,7 +246,7 @@ static void zoned_destroy_context(struct kref *ref)
 
 #if 0
 	DMINFO("destroy context for %zu %lu",
-	       blk_ctx->cache_zone.start, blk_ctx->epoch);
+	       blk_ctx->zone_start, blk_ctx->epoch);
 #endif
 	WARN_ON(delayed_work_pending(&blk_ctx->flush_work));
 	WARN_ON(test_bit(ZONED_CACHE_ATTACHED, &blk_ctx->flags));
@@ -178,7 +262,7 @@ static void zoned_destroy_context(struct kref *ref)
 	spin_lock_irq(&zc->list_lock);
 	list_del_init(&blk_ctx->node);
 	spin_unlock_irq(&zc->list_lock);
-	blk_ctx->cache_zone.start = -1;
+	blk_ctx->zone_start = -1;
 	blk_ctx->cache_zone.wp = -1;
 	WARN_ON(blk_ctx->cache);
 	mempool_free(blk_ctx, zc->blk_zone_pool);
@@ -213,7 +297,7 @@ static void zoned_attach_cache(struct blk_zone_context *blk_ctx)
 
 	if (test_and_set_bit(ZONED_CACHE_ATTACHED, &blk_ctx->flags)) {
 		DMWARN("zone %zu cache already attached",
-		       blk_ctx->cache_zone.start);
+		       blk_ctx->zone_start);
 		return;
 	}
 	zoned_unlock_context(blk_ctx);
@@ -229,7 +313,7 @@ static void zoned_attach_cache(struct blk_zone_context *blk_ctx)
 	/* Someone else might have attached a cache in the meantime */
 	if (blk_ctx->cache) {
 		DMWARN("Duplicate cache for %zu",
-		       blk_ctx->cache_zone.start);
+		       blk_ctx->zone_start);
 		smp_mb__before_atomic();
 		clear_bit(ZONED_CACHE_ATTACHED, &blk_ctx->flags);
 		smp_mb__after_atomic();
@@ -243,7 +327,7 @@ static void zoned_attach_cache(struct blk_zone_context *blk_ctx)
 	memset(blk_ctx->cache, 0x0, zc->cache_size);
 	atomic_inc(&zc->num_cache);
 	DMINFO("Allocate cache for %zu, total %d",
-	       blk_ctx->cache_zone.start, atomic_read(&zc->num_cache));
+	       blk_ctx->zone_start, atomic_read(&zc->num_cache));
 	if (atomic_read(&zc->num_cache) > zc->cache_max)
 		zc->cache_max = atomic_read(&zc->num_cache);
 
@@ -259,7 +343,7 @@ static void zoned_discard_cache(struct blk_zone_context *blk_ctx,
 	void *cache;
 
 	DMINFO("%s discard cache for %zu flags %lx total %d", prefix,
-	       blk_ctx->cache_zone.start, blk_ctx->flags,
+	       blk_ctx->zone_start, blk_ctx->flags,
 	       atomic_read(&zc->num_cache));
 
 	WARN_ON(test_bit(ZONED_CACHE_DIRTY, &blk_ctx->flags));
@@ -282,9 +366,10 @@ static void flush_zone_work(struct work_struct *work)
 	struct block_device *bdev = zc->dev->bdev;
 	struct dm_io_region to;
 	int r;
+	unsigned long bi_rw = REQ_RESET_ZONE;
 	unsigned long error;
 	size_t cached_size;
-	sector_t cached_start = cache_zone->start;
+	sector_t cached_start = blk_ctx->zone_start;
 	struct dm_io_request io_req;
 
 	if (time_before(blk_ctx->wq_tstamp, jiffies)) {
@@ -321,7 +406,7 @@ static void flush_zone_work(struct work_struct *work)
 			if (test_bit(ZONED_CACHE_ACTIVE, &blk_ctx->flags) ||
 			    test_bit(ZONED_CACHE_EVICT, &blk_ctx->flags))
 				DMINFO("flush zone %zu flush flags %lx skip discard",
-				       blk_ctx->cache_zone.start, blk_ctx->flags);
+				       blk_ctx->zone_start, blk_ctx->flags);
 			else
 				zoned_discard_cache(blk_ctx, "flush");
 		}
@@ -334,7 +419,7 @@ static void flush_zone_work(struct work_struct *work)
 	}
 
 	zoned_lock_context(blk_ctx);
-	cached_size = cache_zone->wp - cache_zone->start;
+	cached_size = cache_zone->wp; //  - cache_zone->start;
 	if (test_and_set_bit(ZONED_CACHE_BUSY, &blk_ctx->flags))
 		DMWARN("flush zone %zu already busy", cached_start);
 
@@ -342,8 +427,14 @@ static void flush_zone_work(struct work_struct *work)
 
 	DMINFO("flush zone %zu reset write pointer %zu",
 	       cached_start, cached_size);
-	r = blkdev_issue_discard(bdev, cached_start,
-				 cache_zone->len, GFP_NOFS, 0);
+
+/* Issue discard *must* know length, yes? : can just use '1' here. */
+pr_err("Issue discard to %zx len %zx\n", cached_start, blk_ctx->zone_len);
+
+	if (zc->ata_passthrough)
+		bi_rw |= REQ_META;
+
+	r = blkdev_issue_zone_action(bdev, bi_rw, cached_start, GFP_NOFS);
 	if (r < 0) {
 		DMERR_LIMIT("flush zone %zu reset write pointer error %d",
 			    cached_start, r);
@@ -362,7 +453,8 @@ static void flush_zone_work(struct work_struct *work)
 	to.sector = cached_start;
 	to.count = cached_size;
 
-	io_req.bi_rw = WRITE | REQ_SYNC;
+	io_req.bi_op = REQ_OP_WRITE;
+	io_req.bi_op_flags = REQ_SYNC;
 	io_req.client = zc->dm_io;
 	io_req.notify.fn = NULL;
 	io_req.notify.context = NULL;
@@ -409,7 +501,7 @@ static void read_zone_work(struct work_struct *work)
 	struct zoned_context *zc = blk_ctx->zc;
 	struct dm_io_region from;
 	struct dm_io_request io_req;
-	sector_t start_lba = blk_ctx->cache_zone.start;
+	sector_t start_lba = blk_ctx->zone_start;
 	size_t num_blocks;
 	unsigned long error;
 	int r;
@@ -422,8 +514,8 @@ static void read_zone_work(struct work_struct *work)
 	zoned_lock_context(blk_ctx);
 	blk_ctx->tstamp = jiffies;
 
-	start_lba = blk_ctx->cache_zone.start;
-	num_blocks = blk_ctx->cache_zone.wp - start_lba;
+	start_lba = blk_ctx->zone_start;
+	num_blocks = blk_ctx->cache_zone.wp;
 
 	DMINFO("Loading zone %zu %zu", start_lba, num_blocks);
 
@@ -431,7 +523,8 @@ static void read_zone_work(struct work_struct *work)
 	from.sector = start_lba;
 	from.count = num_blocks;
 
-	io_req.bi_rw = READ | REQ_SYNC;
+	io_req.bi_op = REQ_OP_READ;
+	io_req.bi_op_flags = REQ_SYNC;
 	io_req.client = zc->dm_io;
 	io_req.notify.fn = NULL;
 	io_req.notify.context = NULL;
@@ -468,18 +561,18 @@ static int read_zone_cache(struct blk_zone_context *blk_ctx,
 	int r = 0;
 
 	if (test_and_set_bit(ZONED_CACHE_UPDATE, &blk_ctx->flags)) {
-		DMINFO("zone %zu update in progress", zone->start);
+		DMINFO("zone %zu update in progress", blk_ctx->zone_start);
 		zoned_unlock_context(blk_ctx);
 		wait_for_completion(&blk_ctx->read_complete);
 		zoned_lock_context(blk_ctx);
 		return -EAGAIN;
 	}
 	reinit_completion(&blk_ctx->read_complete);
-	blk_add_trace_msg(q, "zoned load %zu %zu",
-			  zone->start, zone->wp - zone->start);
+	blk_add_trace_msg(q, "zoned load %zu %u",
+			  blk_ctx->zone_start, zone->wp);
 
 	if (blk_zone_is_empty(zone)) {
-		DMINFO("zone %zu empty", zone->start);
+		DMINFO("zone %zu empty", blk_ctx->zone_start);
 		smp_mb__before_atomic();
 		clear_bit(ZONED_CACHE_UPDATE, &blk_ctx->flags);
 		smp_mb__after_atomic();
@@ -493,7 +586,7 @@ static int read_zone_cache(struct blk_zone_context *blk_ctx,
 	zoned_lock_context(blk_ctx);
 
 	if (!blk_ctx->cache) {
-		DMWARN("failed to load zone %zu", zone->start);
+		DMWARN("failed to load zone %zu", blk_ctx->zone_start);
 		r = -EIO;
 	}
 	blk_ctx->tstamp = jiffies;
@@ -515,7 +608,7 @@ static void zeroout_zone_work(struct work_struct *work)
 	if (time_before(blk_ctx->wq_tstamp, jiffies)) {
 		unsigned long tdiff = jiffies - blk_ctx->wq_tstamp;
 		DMINFO("zeroout zone %zu delay %lu msecs",
-		       blk_ctx->cache_zone.start, tdiff);
+		       blk_ctx->zone_start, tdiff);
 	}
 
 	if (nr_sects) {
@@ -543,7 +636,7 @@ static void zoned_handle_misaligned(struct blk_zone_context *blk_ctx,
 	struct zeroout_context ctx;
 
 	DMINFO("zeroout zone %zu wp %zu sector %zu %zu %u",
-	       blk_ctx->cache_zone.start, wp_sector, sector,
+	       blk_ctx->zone_start, wp_sector, sector,
 	       nr_sects, bio_sectors(parent_bio));
 
 	parent_bio->bi_iter.bi_sector = sector;
@@ -555,8 +648,8 @@ static void zoned_handle_misaligned(struct blk_zone_context *blk_ctx,
 	queue_work(zc->wq, &ctx.zeroout_work);
 	flush_work(&ctx.zeroout_work);
 
-	DMINFO("zeroout zone %zu done wp %zu",
-	       blk_ctx->cache_zone.start, blk_ctx->cache_zone.wp);
+	DMINFO("zeroout zone %zu done wp %u",
+	       blk_ctx->zone_start, blk_ctx->cache_zone.wp);
 }
 
 /*
@@ -619,7 +712,7 @@ retry_locked:
 	retries++;
 	if (retries > 5) {
 		DMWARN("evict zone %zu flags %lx looping, found %p retries %d",
-		       blk_ctx->cache_zone.start, blk_ctx->flags,
+		       blk_ctx->zone_start, blk_ctx->flags,
 		       found, retries);
 	}
 	if (found) {
@@ -627,7 +720,7 @@ retry_locked:
 			goto retry_locked;
 		if (test_and_set_bit(ZONED_CACHE_EVICT, &found->flags)) {
 			DMINFO("evict zone %zu already selected",
-				found->cache_zone.start);
+				found->zone_start);
 			zoned_put_context(found);
 			goto retry_locked;
 		}
@@ -642,7 +735,7 @@ retry_locked:
 		/* 5. Fallback yet to be implemented */
 		WARN_ON(retry > 3);
 		DMWARN("evict zone %zu retry round %d",
-		       blk_ctx->cache_zone.start, retry);
+		       blk_ctx->zone_start, retry);
 		goto retry_unlocked;
 	}
 	if (atomic_read(&zc->num_cache) <= zc->cache_lowat)
@@ -651,16 +744,16 @@ retry_locked:
 	if (retry && oldest_ctx != found) {
 		unsigned long tdiff = jiffies - oldest_ctx->tstamp;
 		DMWARN("evict oldest zone %zu %p flags %lx %u msecs",
-		       oldest_ctx->cache_zone.start, oldest_ctx,
+		       oldest_ctx->zone_start, oldest_ctx,
 		       oldest_ctx->flags, jiffies_to_msecs(tdiff));
 	}
 	DMINFO("evict zone %zu epoch %d flags %lx total %d",
-	       found->cache_zone.start, atomic_read(&found->epoch),
+	       found->zone_start, atomic_read(&found->epoch),
 	       found->flags, atomic_read(&zc->num_cache));
 	if (test_bit(ZONED_CACHE_ACTIVE, &found->flags)) {
 		/* Other I/O is waiting on this cache */
 		DMWARN("evict zone %zu delayed I/O pending",
-		       found->cache_zone.start);
+		       found->zone_start);
 		restart = true;
 		goto evict_done;
 	}
@@ -677,7 +770,7 @@ retry_locked:
 #if 0
 		if (atomic_read(&zc->num_cache) <= zc->cache_hiwat) {
 			DMINFO("zone %zu evict flush queue %d",
-			       found->cache_zone.start,
+			       found->zone_start,
 			       atomic_read(&zc->num_cache));
 			zoned_get_context(found);
 			if (mod_delayed_work(zc->wq,
@@ -691,12 +784,12 @@ retry_locked:
 		}
 #endif
 		DMINFO("evict zone %zu flush start %d flags %lx",
-		       found->cache_zone.start, atomic_read(&found->epoch),
+		       found->zone_start, atomic_read(&found->epoch),
 		       found->flags);
 		zoned_get_context(found);
 		if (mod_delayed_work(zc->wq, &found->flush_work, 0)) {
 			DMINFO("evict zone %zu flush already started",
-			       found->cache_zone.start);
+			       found->zone_start);
 			zoned_put_context(found);
 		} else {
 			found->wq_tstamp = jiffies;
@@ -708,12 +801,12 @@ retry_locked:
 	zoned_lock_context(found);
 	if (test_bit(ZONED_CACHE_DIRTY, &found->flags)) {
 		DMWARN("evict zone %zu still dirty, retry",
-		       found->cache_zone.start);
+		       found->zone_start);
 		restart = true;
 	} else if (retry < 3 && test_bit(ZONED_CACHE_ACTIVE, &found->flags)) {
 		/* Lost the race with zoned_map() */
 		DMWARN("evict zone %zu race lost",
-		       found->cache_zone.start);
+		       found->zone_start);
 		/* 4. Make sure we get a cache the next time */
 		retry++;
 		restart = true;
@@ -739,10 +832,10 @@ static void zoned_handle_bio(struct blk_zone_context *blk_ctx, sector_t sector,
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 	struct blk_zone *cache_zone = &blk_ctx->cache_zone;
-	sector_t bio_offset = sector - cache_zone->start;
+	sector_t bio_offset = sector - blk_ctx->zone_start;
 	size_t sector_offset = bio_offset << SECTOR_SHIFT;
-	size_t wp_lim = (cache_zone->wp - cache_zone->start) << SECTOR_SHIFT;
-	size_t cache_lim = (cache_zone->len << SECTOR_SHIFT);
+	size_t wp_lim = cache_zone->wp << SECTOR_SHIFT;
+	size_t cache_lim = (blk_ctx->zone_len << SECTOR_SHIFT);
 	size_t bio_len = 0;
 	unsigned long flags;
 	u8 *cache_ptr;
@@ -804,20 +897,20 @@ static void zoned_handle_bio(struct blk_zone_context *blk_ctx, sector_t sector,
 			}
 
 			new_wp = ((sector_offset + len) >> SECTOR_SHIFT);
-			if (cache_zone->wp < cache_zone->start + new_wp) {
+			if (get_cache_wp(blk_ctx) < new_wp) {
 #if 0
 				DMINFO("update wp %zu -> %zu",
 				       blk_ctx->wp,
-				       cache_zone->start + new_wp);
+				       new_wp);
 #endif
-				cache_zone->wp = cache_zone->start + new_wp;
+				cache_zone->wp = new_wp - blk_ctx->zone_start;
 			}
 		}
 		bvec_kunmap_irq(data, &flags);
 		sector_offset += bvec.bv_len;
 		bio_len += (bvec.bv_len >> SECTOR_SHIFT);
 	}
-	blk_add_trace_msg(q, "zoned cached %zu %zu %zu", cache_zone->start,
+	blk_add_trace_msg(q, "zoned cached %zu %zu %zu", blk_ctx->zone_start,
 			  bio_offset, bio_len);
 	blk_ctx->tstamp = jiffies;
 }
@@ -834,7 +927,7 @@ static int zoned_end_io(struct dm_target *ti, struct bio *bio, int error)
 
 		if (error)
 			DMWARN("zone %zu sector %zu error %d",
-			       blk_ctx->cache_zone.start,
+			       blk_ctx->zone_start,
 			       bio->bi_iter.bi_sector, error);
 		info->ctx = NULL;
 		timeout = zc->cache_timeout * HZ;
@@ -853,6 +946,8 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 	struct zoned_context *zc = ti->private;
 	struct request_queue *q = bdev_get_queue(zc->dev->bdev);
 	sector_t sector;
+	sector_t zone_start;
+	sector_t zone_len;
 	struct blk_zone *zone = NULL;
 	struct blk_zone_context *blk_ctx = NULL;
 	unsigned int num_sectors;
@@ -863,31 +958,34 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 	bio->bi_bdev = zc->dev->bdev;
 	info->ctx = NULL;
 	sector = dm_target_offset(ti, bio->bi_iter.bi_sector);
-	if (!bio_sectors(bio) && !(bio->bi_rw & REQ_FLUSH))
+	if (!bio_sectors(bio) && !(bio->bi_rw & REQ_PREFLUSH))
 		goto remap;
 
-	zone = blk_lookup_zone(q, sector);
+	zone = blk_lookup_zone(zc, sector, &zone_start, &zone_len);
 	if (!zone) {
 		/*
 		 * No zone found.
 		 * Use backing device.
 		 */
+		pr_err("No zone for %lx\n", sector);
 		goto remap;
 	}
-	if (!blk_zone_is_smr(zone)) {
+	if (blk_zone_is_cmr(zone)) {
 		/*
 		 * Not an SMR zone.
 		 * Use backing device.
 		 */
+		pr_err("Zone %lx is CMR\n", sector);
+		/* the starting zone maybe CMR but the ending zone may not be */
 		goto remap;
 	}
 	num_sectors = bio_sectors(bio);
-	if (sector + bio_sectors(bio) > zone->start + zone->len) {
+	if (sector + bio_sectors(bio) > zone_start + zone_len) {
 		DMWARN("bio %c too large (sector %zu len %u zone %zu lim %zu)",
 		       bio_data_dir(bio) == READ ? 'r' : 'w', sector,
-		       bio_sectors(bio), zone->start,
-		       zone->start + zone->len);
-		num_sectors = zone->start + zone->len - sector;
+		       bio_sectors(bio), zone_start,
+		       zone_start + zone_len);
+		num_sectors = zone_start + zone_len - sector;
 		dm_accept_partial_bio(bio, num_sectors);
 	}
 
@@ -898,7 +996,8 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 		blk_ctx->tstamp = jiffies;
 	} else {
 		/* Check for FLUSH & DISCARD */
-		if (unlikely(bio->bi_rw & (REQ_FLUSH | REQ_DISCARD))) {
+		if (unlikely(bio->bi_rw & REQ_PREFLUSH) ||
+		    unlikely(bio->bi_op & REQ_OP_DISCARD)) {
 			spin_unlock_irqrestore(&zone->lock, flags);
 			goto remap;
 		}
@@ -906,13 +1005,13 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 			/*
 			 * Read request to non-cached zone.
 			 */
-			if (sector >= zone->wp) {
+			if (sector >= (zone_start + zone->wp)) {
 				/*
 				 * Read beyond Write pointer.
 				 * Move along, there is nothing to see.
 				 */
 				blk_add_trace_msg(q, "beyond wp %zu",
-						  zone->wp);
+						  zone_start + zone->wp);
 				spin_unlock_irqrestore(&zone->lock, flags);
 				bio_endio(bio);
 				return DM_MAPIO_SUBMITTED;
@@ -929,17 +1028,16 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 		 */
 		blk_ctx = mempool_alloc(zc->blk_zone_pool, GFP_KERNEL);
 		if (WARN_ON(!blk_ctx)) {
-			DMWARN("cannot allocate context for %zu",
-			       zone->start);
+			DMWARN("cannot allocate context for %zu", zone_start);
 			goto remap;
 		}
 #if 0
-		DMINFO("Allocated context for %zu %p", zone->start, blk_ctx);
+		DMINFO("Allocated context for %zu %p", zone_start, blk_ctx);
 #endif
 		spin_lock_irqsave(&zone->lock, flags);
 		if (zone->private_data &&
 		    zoned_get_context(zone->private_data)) {
-			DMWARN("concurrent allocation for %zu", zone->start);
+			DMWARN("concurrent allocation for %zu", zone_start);
 			mempool_free(blk_ctx, zc->blk_zone_pool);
 			blk_ctx = zone->private_data;
 		} else {
@@ -947,9 +1045,9 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 			zone->private_data = blk_ctx;
 			blk_ctx->zc = zc;
 			blk_ctx->zone = zone;
-			blk_ctx->cache_zone.start = zone->start;
+			blk_ctx->zone_start = zone_start;
+			blk_ctx->zone_len = zone_len;
 			blk_ctx->cache_zone.wp = zone->wp;
-			blk_ctx->cache_zone.len = zone->len;
 		}
 		blk_ctx->tstamp = jiffies;
 	}
@@ -970,18 +1068,18 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 		blk_add_trace_msg(q, "zoned delay concurrent %zu %u",
 				  sector, num_sectors);
 		DMWARN("zone %zu wait for concurrent I/O sector %zu",
-		       blk_ctx->cache_zone.start, sector);
+		       blk_ctx->zone_start, sector);
 		if (!wait_on_bit_timeout(&blk_ctx->flags, ZONED_CACHE_ACTIVE,
 					 TASK_UNINTERRUPTIBLE,
 					 zc->cache_timeout * HZ))
 			break;
 		DMWARN("zone %zu concurrent I/O timeout",
-		       blk_ctx->cache_zone.start);
+		       blk_ctx->zone_start);
 	}
 
 	if (test_bit(ZONED_CACHE_EVICT, &blk_ctx->flags)) {
 		DMINFO("zone %zu wait for eviction to complete",
-		       blk_ctx->cache_zone.start);
+		       blk_ctx->zone_start);
 		wait_on_bit_io(&blk_ctx->flags, ZONED_CACHE_EVICT,
 			       TASK_UNINTERRUPTIBLE);
 		/* Update timestamp to avoid lru eviction */
@@ -994,7 +1092,7 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 	}
 	if (test_bit(ZONED_CACHE_UPDATE, &blk_ctx->flags)) {
 		DMINFO("zone %zu update in progress",
-		       blk_ctx->cache_zone.start);
+		       blk_ctx->zone_start);
 		wait_for_completion(&blk_ctx->read_complete);
 	}
 	zoned_lock_context(blk_ctx);
@@ -1002,23 +1100,25 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 	WARN_ON(test_bit(ZONED_CACHE_EVICT, &blk_ctx->flags));
 	WARN_ON(test_bit(ZONED_CACHE_BUSY, &blk_ctx->flags));
 	/* Check for FLUSH & DISCARD */
-	if (unlikely(bio->bi_rw & (REQ_FLUSH | REQ_DISCARD))) {
-		size_t len = blk_ctx->cache_zone.wp - blk_ctx->cache_zone.start;
+
+	if (unlikely(bio->bi_rw & REQ_PREFLUSH) ||
+	    unlikely(bio->bi_op & REQ_OP_DISCARD)) {
+		size_t len = blk_ctx->cache_zone.wp;
 		DMINFO("%s zone %zu %zu",
-		       (bio->bi_rw & REQ_DISCARD) ? "discard" : "flush",
-		       blk_ctx->cache_zone.start, len);
+		       (bio->bi_op & REQ_OP_DISCARD) ? "discard" : "flush",
+		       zone_start, len);
 		blk_add_trace_msg(q, "zoned %s %zu %zu",
-				  (bio->bi_rw & REQ_DISCARD) ?
+				  (bio->bi_op & REQ_OP_DISCARD) ?
 				  "discard" : "flush",
-				  blk_ctx->cache_zone.start, len);
+				  zone_start, len);
 		goto remap_unref;
 	}
 	if (sector < blk_ctx->cache_zone.wp &&
 	    sector + bio_sectors(bio) > blk_ctx->cache_zone.wp) {
 		DMWARN("bio %c beyond wp (sector %zu len %u wp %zu)",
 		       bio_data_dir(bio) == READ ? 'r' : 'w', sector,
-		       bio_sectors(bio), blk_ctx->cache_zone.wp);
-		num_sectors = blk_ctx->cache_zone.wp - sector;
+		       bio_sectors(bio), get_cache_wp(blk_ctx));
+		num_sectors = get_cache_wp(blk_ctx) - sector;
 		dm_accept_partial_bio(bio, num_sectors);
 	}
 	/* list is not initialized above */
@@ -1041,7 +1141,7 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 			       sector, num_sectors);
 #endif
 			goto remap_unref;
-		} else if (sector == blk_ctx->cache_zone.wp) {
+		} else if (sector == get_cache_wp(blk_ctx)) {
 			/*
 			 * Aligned write
 			 */
@@ -1054,14 +1154,14 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 			info->ctx = blk_ctx;
 			zoned_get_context(blk_ctx);
 			goto remap_unref;
-		} else if (sector > blk_ctx->cache_zone.wp) {
-			sector_t gap = sector - blk_ctx->cache_zone.wp;
+		} else if (sector > get_cache_wp(blk_ctx)) {
+			sector_t gap = sector - get_cache_wp(blk_ctx);
 			/*
 			 * Write beyond WP
 			 */
 			blk_add_trace_msg(q, "zoned misaligned "
 					  "%zu %zu %u",
-					  blk_ctx->cache_zone.wp,
+					  get_cache_wp(blk_ctx),
 					  gap, num_sectors);
 			zc->disk_misaligned_writes++;
 			bio->bi_rw |= WRITE_SYNC;
@@ -1094,7 +1194,7 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 		zc->cache_hits++;
 #if 0
 		DMINFO("cache hit zone %zu %zu %u",
-		       zone->start, sector, num_sectors);
+		       zone_start, sector, num_sectors);
 #endif
 	}
 	zoned_handle_bio(blk_ctx, sector, bio);
@@ -1110,7 +1210,7 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 		zoned_get_context(blk_ctx);
 		if (mod_delayed_work(zc->wq, &blk_ctx->flush_work, 0)) {
 			DMWARN("zoned %zu FUA flush already queued",
-			       blk_ctx->cache_zone.start);
+				zone_start);
 			zoned_put_context(blk_ctx);
 		} else
 			blk_ctx->wq_tstamp = jiffies;
@@ -1125,7 +1225,7 @@ static int zoned_map(struct dm_target *ti, struct bio *bio)
 		if (mod_delayed_work(zc->wq, &blk_ctx->flush_work,
 				     zc->cache_timeout * HZ)) {
 			DMWARN("zoned %zu flush already queued",
-			       blk_ctx->cache_zone.start);
+			       zone_start);
 			zoned_put_context(blk_ctx);
 		} else
 			blk_ctx->wq_tstamp = jiffies;
@@ -1178,6 +1278,344 @@ static int zoned_iterate_devices(struct dm_target *ti,
 	struct zoned_context *zc = ti->private;
 
 	return fn(ti, zc->dev, 0, ti->len, data);
+}
+
+/**
+ * zc_report_zones() - issue report zones from z_id zones after zdstart
+ * @zc: zoned context
+ * @s_addr: Zone past zdstart
+ * @report: structure filled
+ * @bufsz: kmalloc()'d space reserved for report
+ *
+ * Return: -ENOTSUPP or 0 on success
+ */
+static int zc_report_zones(struct zoned_context *zc, u64 s_addr,
+			    struct page *pgs, size_t bufsz)
+{
+	int wp_err = -ENOTSUPP;
+
+	if (zc->bdev_is_zoned) {
+		u8  opt = ZOPT_NON_SEQ_AND_RESET;
+		struct block_device *bdev = zc->dev->bdev;
+		const unsigned long bi_rw = zc->ata_passthrough ? REQ_META : 0;
+
+		wp_err = blkdev_issue_zone_report(bdev, bi_rw, s_addr, opt,
+						  pgs, bufsz, GFP_KERNEL);
+		if (wp_err) {
+			pr_err("Report Zones: LBA: %llx -> %d failed.",
+			      s_addr, wp_err);
+			pr_err("ZAC/ZBC support disabled.");
+			zc->bdev_is_zoned = 0;
+			wp_err = -ENOTSUPP;
+		}
+	}
+	return wp_err;
+}
+
+/**
+ * get_len_from_desc() - Decode write pointer as # of blocks from start
+ * @zc: zoned context
+ * @dentry_in: Zone descriptor entry.
+ *
+ * Return: Write Pointer as number of blocks from start of zone.
+ */
+static inline u64 get_len_from_desc(struct zoned_context *zc, void *dentry_in)
+{
+	u64 len = 0;
+
+	/*
+	 * If ATA passthrough was used then ZAC results are little endian.
+	 * otherwise ZBC results are big endian.
+	 */
+
+	if (zc->ata_passthrough) {
+		struct bdev_zone_descriptor_le *lil = dentry_in;
+
+		len = le64_to_cpu(lil->length);
+	} else {
+		struct bdev_zone_descriptor *big = dentry_in;
+
+		len = be64_to_cpu(big->length);
+	}
+	return len;
+}
+
+
+/**
+ * get_wp_from_desc() - Decode write pointer as # of blocks from start
+ * @zc: zoned context
+ * @dentry_in: Zone descriptor entry.
+ *
+ * Return: Write Pointer as number of blocks from start of zone.
+ */
+static inline u32 get_wp_from_desc(struct zoned_context *zc, void *dentry_in)
+{
+	u32 wp = 0;
+
+	/*
+	 * If ATA passthrough was used then ZAC results are little endian.
+	 * otherwise ZBC results are big endian.
+	 */
+
+	if (zc->ata_passthrough) {
+		struct bdev_zone_descriptor_le *lil = dentry_in;
+
+		wp = le64_to_cpu(lil->lba_wptr) - le64_to_cpu(lil->lba_start);
+	} else {
+		struct bdev_zone_descriptor *big = dentry_in;
+
+		wp = be64_to_cpu(big->lba_wptr) - be64_to_cpu(big->lba_start);
+	}
+	return wp;
+}
+
+/**
+ * alloc_cpws() - Allocate space for a contiguous set of write pointers
+ * @items: Number of wps needed.
+ * @lba: lba of the start of the next zone.
+ * @z_start: Starting lba of this contiguous set.
+ * @z_size: Size of each zone this contiguous set.
+ * 
+ * Return: Allocated wps or NULL on error.
+ */
+static
+struct contiguous_wps *alloc_cpws(int items, u64 lba, u64 z_start, u64 z_size)
+{
+	struct contiguous_wps *cwps = NULL;
+	size_t sz;
+
+	sz = sizeof(struct contiguous_wps) + (items * sizeof(struct blk_zone));
+	if (items) {
+		cwps = vzalloc(sz);
+		if (!cwps)
+			goto out;
+		cwps->start_lba = z_start;
+		cwps->last_lba = lba - 1;
+		cwps->zone_size = z_size;
+		cwps->zone_block_order = SECTOR_SHIFT;
+		cwps->is_zoned = items > 1 ? 1 : 0;
+		cwps->zone_count = items;
+	}
+
+out:
+	return cwps;
+}
+
+/**
+ * free_zone_wps() - Free up memory in use by wps 
+ * @zi: zone wps array(s).
+ */
+static void free_zone_wps(struct zone_wps *zi)
+{
+	/* on error free the arrays */
+	if (zi && zi->wps) {
+		int ca;
+
+		for (ca = 0; ca < zi->wps_count; ca++) {
+			if (zi->wps[ca]) {
+				vfree(zi->wps[ca]);
+				zi->wps[ca] = NULL;
+			}
+		}
+		kfree(zi->wps);
+	}
+}
+
+/**
+ * get_zone_wps() - Re-Sync expected WP location with drive
+ * @zc: zoned context
+ *
+ * Return: 0 on success, otherwise error.
+ */
+static int get_zone_wps(struct zoned_context *zc)
+{
+	int rcode = 0;
+	int entry = 0;
+	u64 iter;
+	u64 bdevsz;
+	u64 z_start = 0ul;
+	u64 z_size = 0; /* size of zone */
+	int z_count = 0; /* number of zones of z_size */
+	int array_count = 0;
+	struct bdev_zone_report *report = NULL;
+	int order = REPORT_ORDER;
+	size_t bufsz = REPORT_FILL_PGS * PAGE_SIZE;
+	struct zone_wps zi = { 0, NULL };
+	struct contiguous_wps *cwps = NULL;
+	struct page *pgs = alloc_pages(GFP_KERNEL, order);
+
+	if (pgs)
+		report = page_address(pgs);
+
+	if (!report) {
+		rcode = -ENOMEM;
+		goto out;
+	}
+
+	/*
+	 * Start by handling upto 32 different zone sizes. 2 will work
+	 * for all the current drives, but maybe something exotic will
+	 * can still be supported by this scheme.
+	 */
+	zi.wps = kzalloc(32 * sizeof(*zi.wps), GFP_KERNEL);
+	zi.wps_count = 32;
+	if (!zi.wps) {
+		rcode = -ENOMEM;
+		goto out;
+	}
+
+	bdevsz = i_size_read(zc->dev->bdev->bd_inode) >> SECTOR_SHIFT;
+	zc->zones_info.wps_count = 0;
+
+fill:
+	for (entry = 0, iter = 0; iter < bdevsz; entry++) {
+		struct bdev_zone_descriptor *dentry;
+		int offset = entry % 4096;
+		int stop_end = 0;
+		int stop_size = 0;
+
+		if (offset == 0) {
+			int err = zc_report_zones(zc, iter, pgs, bufsz);
+
+			if (err) {
+				pr_err("report zones-> %d\n", err);
+				if (err != -ENOTSUPP)
+					rcode = err;
+				goto out;
+			}
+		}
+		dentry = &report->descriptors[offset];
+		if (z_size == 0)
+			z_size = get_len_from_desc(zc, dentry);
+		if (z_size != get_len_from_desc(zc, dentry))
+			stop_size = 1;
+		if ((iter + z_size) >= bdevsz)
+			stop_end = 1;
+		if (zc->zones_info.wps_count == 0) {
+			if (stop_end || stop_size) {
+				/* include the next/last zone? */
+				if (!stop_size) {
+					z_count++;
+					iter += z_size;
+				}
+				cwps = alloc_cpws(z_count, iter,
+						  z_start, z_size);
+				if (!cwps) {
+					rcode = -ENOMEM;
+					goto out;
+				}
+				zi.wps[array_count] = cwps;
+
+				z_start = iter;
+				z_size = 0;
+				z_count = 0;
+				array_count++;
+				if (array_count >= zi.wps_count) {
+					struct contiguous_wps **old;
+					struct contiguous_wps **tmp;
+					int n = zi.wps_count * 2;
+
+					old = zi.wps;
+					tmp = kzalloc(n * sizeof(*zi.wps), GFP_KERNEL);
+					if (!tmp) {
+						rcode = -ENOMEM;
+						goto out;
+					}
+					memcpy(tmp, zi.wps, zi.wps_count * sizeof(*zi.wps));
+					zi.wps = tmp;
+					kfree(old);
+				}
+
+				/* add the runt zone */
+				if (stop_end && stop_size) {
+					z_count++;
+					z_size = get_len_from_desc(zc, dentry);
+					cwps = alloc_cpws(z_count,
+							  iter + z_size,
+							  z_start, z_size);
+					if (!cwps) {
+						rcode = -ENOMEM;
+						goto out;
+					}
+					zi.wps[array_count] = cwps;
+					array_count++;
+				}
+				if (stop_end) {
+					zc->zones_info.wps_count = array_count;
+					array_count = 0;
+					z_count = 0;
+					z_size = 0;
+					zc->zones_info.wps = zi.wps;
+					goto fill;
+
+				}
+			}
+			z_size = get_len_from_desc(zc, dentry);
+			iter += z_size;
+			z_count++;
+		} else {
+			u64 z_chk = get_len_from_desc(zc, dentry);
+			if (z_chk == 0 || z_chk > 0x80000) {
+				pr_err("*** Invalid zone length returned!?!?\n");
+				zc->zones_info.wps_count = array_count;
+				rcode = -EIO;
+				goto out;
+			}
+
+			cwps = zc->zones_info.wps[array_count];
+			spin_lock_init(&cwps->zones[z_count].lock);
+			cwps->zones[z_count].type = dentry->type & 0x0F;
+			cwps->zones[z_count].state = (dentry->flags & 0xF0) >> 4;
+			cwps->zones[z_count].wp = get_wp_from_desc(zc, dentry);
+			cwps->zones[z_count].private_data = NULL;
+			z_count++;
+			iter += z_size;
+
+			if (cwps->zone_count == z_count) {
+				z_count = 0;
+				array_count++;
+			}
+		}
+	}
+out:
+	if (pgs)
+		__free_pages(pgs, order);
+
+	if (rcode) {
+		free_zone_wps(&zi);
+		zc->zones_info.wps = NULL;
+		zc->zones_info.wps_count = 0;
+	}
+
+	return rcode;
+}
+
+/**
+ * fixup_chunk_sectors() - When 'same' code is 0 ... this is broken.
+ * @zc: zoned context
+ *
+ * Because the current generation of Seagate HA drives support
+ * conventional zones *and* have a final 'runt' zone the drive
+ * firmware reports a some code of 0.
+ *
+ * In such cases the 'chunk_size' will also be set to 0 as a default.
+ * This needs to be fixed as the chunk_size is used to determine
+ * memory cache allocation size.
+ * 
+ * Return: 0 on success, otherwise error.
+ */
+static void fixup_chunk_sectors(struct zoned_context *zc,
+				struct request_queue *q)
+{
+	int iter;
+	u64 maxlen = 0ul;
+
+	for (iter = 0; iter < zc->zones_info.wps_count; iter++)
+		if (zc->zones_info.wps[iter]->zone_size > maxlen)
+			maxlen = zc->zones_info.wps[iter]->zone_size;
+
+	if (maxlen > 0ul)
+		blk_queue_chunk_sectors(q, maxlen);
 }
 
 /*
@@ -1244,10 +1682,17 @@ static int zoned_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		r = -ENODEV;
 		goto bad_dev;
 	}
+	zc->ata_passthrough = 1;
+	zc->bdev_is_zoned = 1;
+	r = get_zone_wps(zc);
+	if (r)
+		goto bad_dev;
 
 	q = bdev_get_queue(zc->dev->bdev);
-	blk_queue_flush(q, REQ_FLUSH);
-	elevator_change(q, "noop");
+	if (!q->limits.chunk_sectors)
+		fixup_chunk_sectors(zc, q);
+	blk_queue_flush(q, REQ_PREFLUSH);
+	elevator_change(q, "noop"); /* or set no merges flags */
 	logical_blksize = queue_logical_block_size(q);
 	zc->cache_size = blk_max_size_offset(q, 0) * logical_blksize;
 	blk_queue_io_opt(q, zc->cache_size);
@@ -1280,6 +1725,7 @@ static int zoned_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->per_io_data_size = sizeof(struct dm_zoned_info);
 
 	ti->private = zc;
+
 	return 0;
 
 bad_wq:
@@ -1297,9 +1743,8 @@ bad:
 static void zoned_dtr(struct dm_target *ti)
 {
 	struct zoned_context *zc = ti->private;
-	struct request_queue *q;
-	struct rb_node *node;
 	struct blk_zone_context *blk_ctx, *tmp;
+	int iter;
 
 	spin_lock_irq(&zc->list_lock);
 	list_for_each_entry_safe(blk_ctx, tmp, &zc->cache_list, node) {
@@ -1326,36 +1771,37 @@ static void zoned_dtr(struct dm_target *ti)
 	spin_unlock_irq(&zc->list_lock);
 	flush_workqueue(zc->wq);
 
-	q = bdev_get_queue(zc->dev->bdev);
-	for (node = rb_first(&q->zones); node; node = rb_next(node)) {
-		struct blk_zone *zone;
-		unsigned long flags;
+	for (iter = 0; iter < zc->zones_info.wps_count; iter++) {
+		int zone;
+		struct contiguous_wps *cwps = zc->zones_info.wps[iter];
 
-		zone = rb_entry(node, struct blk_zone, node);
-		spin_lock_irqsave(&zone->lock, flags);
-		blk_ctx = NULL;
-		if (zone->private_data) {
-			blk_ctx = zone->private_data;
-			zone->private_data = NULL;
-			blk_ctx->zone = NULL;
+		for (zone = 0; zone < cwps->zone_count; zone++) {
+			blk_ctx = NULL;
+			if (cwps->zones[zone].private_data) {
+				blk_ctx = cwps->zones[zone].private_data;
+				cwps->zones[zone].private_data = NULL;
+				blk_ctx->zone = NULL;
+			}
+			if (blk_ctx) {
+				sector_t len = blk_ctx->cache_zone.wp;
+				DMWARN("destroy zone context %zu %zu",
+				       blk_ctx->zone_start, len);
+				zoned_get_context(blk_ctx);
+				cancel_delayed_work_sync(&blk_ctx->flush_work);
+				WARN_ON(test_bit(ZONED_CACHE_DIRTY, &blk_ctx->flags));
+				WARN_ON(test_bit(ZONED_CACHE_BUSY, &blk_ctx->flags));
+				zoned_lock_context(blk_ctx);
+				if (blk_ctx->cache)
+					zoned_discard_cache(blk_ctx, "destroy");
+				zoned_unlock_context(blk_ctx);
+				zoned_put_context(blk_ctx);
+				zoned_put_context(blk_ctx);
+			}
 		}
-		spin_unlock_irqrestore(&zone->lock, flags);
-		if (blk_ctx) {
-			sector_t len = blk_ctx->cache_zone.wp - blk_ctx->cache_zone.start;
-			DMWARN("destroy zone context %zu %zu",
-			       blk_ctx->cache_zone.start, len);
-			zoned_get_context(blk_ctx);
-			cancel_delayed_work_sync(&blk_ctx->flush_work);
-			WARN_ON(test_bit(ZONED_CACHE_DIRTY, &blk_ctx->flags));
-			WARN_ON(test_bit(ZONED_CACHE_BUSY, &blk_ctx->flags));
-			zoned_lock_context(blk_ctx);
-			if (blk_ctx->cache)
-				zoned_discard_cache(blk_ctx, "destroy");
-			zoned_unlock_context(blk_ctx);
-			zoned_put_context(blk_ctx);
-			zoned_put_context(blk_ctx);
-		}
+		vfree(cwps);
 	}
+	kfree(zc->zones_info.wps);
+
 	destroy_workqueue(zc->wq);
 	dm_put_device(ti, zc->dev);
 	dm_io_client_destroy(zc->dm_io);
