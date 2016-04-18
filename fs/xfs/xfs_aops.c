@@ -396,6 +396,7 @@ xfs_submit_ioend_bio(
 	bio->bi_op = REQ_OP_WRITE;
 	if (wbc->sync_mode == WB_SYNC_ALL)
 		bio->bi_rw = WRITE_SYNC;
+        bio_set_streamid(bio, ioend->io_inode->i_streamid);
 	submit_bio(bio);
 }
 
