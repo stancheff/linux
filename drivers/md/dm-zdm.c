@@ -120,8 +120,18 @@ static inline u32 bio_stream(struct bio *bio)
 	 * use this heuristic to try to skip unnecessary co-mingling of data.
 	 */
 
-	if (bio->bi_rw & REQ_META)
+	if (bio->bi_rw & REQ_META) {
 		stream_id = 0xff;
+	} else {
+		unsigned int id = bio_get_streamid(bio);
+
+		/* high 8 bits is hash of PID, low 8 bits is hash of inode# */
+		stream_id = id >> 8;
+		if (stream_id == 0)
+			stream_id++;
+		if (stream_id == 0xff)
+			stream_id--;
+	}
 
 	return stream_id;
 }
