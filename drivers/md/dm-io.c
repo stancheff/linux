@@ -292,6 +292,7 @@ static void do_region(int op, int op_flags, unsigned region,
 	unsigned short logical_block_size = queue_logical_block_size(q);
 	sector_t num_sectors;
 	unsigned int uninitialized_var(special_cmd_max_sectors);
+	struct blk_plug plug;
 
 	/*
 	 * Reject unsupported discard and write same requests.
@@ -306,6 +307,7 @@ static void do_region(int op, int op_flags, unsigned region,
 		return;
 	}
 
+	blk_start_plug(&plug);
 	/*
 	 * where->count may be zero if op holds a flush and we need to
 	 * send a zero-sized flush.
@@ -361,6 +363,7 @@ static void do_region(int op, int op_flags, unsigned region,
 		atomic_inc(&io->count);
 		submit_bio(bio);
 	} while (remaining);
+	blk_finish_plug(&plug);
 }
 
 static void dispatch_io(int op, int op_flags, unsigned int num_regions,
