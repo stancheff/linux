@@ -366,8 +366,9 @@ static int __blkdev_issue_discard_async(struct block_device *bdev, sector_t sect
 	bio->bi_iter.bi_sector = sector;
 	bio->bi_bdev = bdev;
 	bio->bi_iter.bi_size = nr_sects << 9;
+	bio->bi_rw = type;
 
-	submit_bio(type, bio);
+	submit_bio(bio);
 
 	return 0;
 }
