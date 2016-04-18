@@ -576,7 +576,6 @@ static void skd_request_fn(struct request_queue *q)
 	struct request *req = NULL;
 	struct skd_scsi_request *scsi_req;
 	struct page *page;
-	unsigned long io_flags;
 	int error;
 	u32 lba;
 	u32 count;
@@ -624,12 +623,11 @@ static void skd_request_fn(struct request_queue *q)
 		lba = (u32)blk_rq_pos(req);
 		count = blk_rq_sectors(req);
 		data_dir = rq_data_dir(req);
-		io_flags = req->cmd_flags;
 
-		if (io_flags & REQ_FLUSH)
+		if (req->cmd_flags & REQ_FLUSH)
 			flush++;
 
-		if (io_flags & REQ_FUA)
+		if (req->cmd_flags & REQ_FUA)
 			fua++;
 
 		pr_debug("%s:%s:%d new req=%p lba=%u(0x%x) "
@@ -735,7 +733,7 @@ static void skd_request_fn(struct request_queue *q)
 		else
 			skreq->sg_data_dir = SKD_DATA_DIR_HOST_TO_CARD;
 
-		if (io_flags & REQ_DISCARD) {
+		if (req->op == REQ_OP_DISCARD) {
 			page = alloc_page(GFP_ATOMIC | __GFP_ZERO);
 			if (!page) {
 				pr_err("request_fn:Page allocation failed.\n");
@@ -852,9 +850,8 @@ static void skd_end_request(struct skd_device *skdev,
 			    struct skd_request_context *skreq, int error)
 {
 	struct request *req = skreq->req;
-	unsigned int io_flags = req->cmd_flags;
 
-	if ((io_flags & REQ_DISCARD) &&
+	if ((req->op == REQ_OP_DISCARD) &&
 		(skreq->discard_page == 1)) {
 		pr_debug("%s:%s:%d, free the page!",
 			 skdev->name, __func__, __LINE__);

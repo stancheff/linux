@@ -49,7 +49,7 @@
 #define NVME_AQ_DEPTH		256
 #define SQ_SIZE(depth)		(depth * sizeof(struct nvme_command))
 #define CQ_SIZE(depth)		(depth * sizeof(struct nvme_completion))
-		
+
 /*
  * We handle AEN commands ourselves and don't even let the
  * block layer know about them.
@@ -340,7 +340,7 @@ static int nvme_init_iod(struct request *rq, struct nvme_dev *dev)
 	int nseg = rq->nr_phys_segments;
 	unsigned size;
 
-	if (rq->cmd_flags & REQ_DISCARD)
+	if (rq->op == REQ_OP_DISCARD)
 		size = sizeof(struct nvme_dsm_range);
 	else
 		size = blk_rq_bytes(rq);
@@ -656,7 +656,7 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	if (ret)
 		return ret;
 
-	if (req->cmd_flags & REQ_DISCARD) {
+	if (req->op == REQ_OP_DISCARD) {
 		ret = nvme_setup_discard(nvmeq, ns, req, &cmnd);
 	} else {
 		if (req->cmd_type == REQ_TYPE_DRV_PRIV)
