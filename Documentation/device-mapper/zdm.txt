@@ -1,0 +1,66 @@
+Overview of Host Aware ZBC/ZAC Device Mapper
+  - Zone size (256MiB)
+  - Reset WP, Open Zone, Close Zone, Get Zone Info ...
+
+ZDM presents a traditional block device for ZBC/ZAC zoned devices.
+
+User space utilities in zdm-tools for creating, repairing and restore
+DM instances at: https://github.com/Seagate
+
+ZDM uses a zoned translation layer which shares similarities with
+an FTL.
+
+Primary advantages of using a zoned translation layer (ZTL) over a
+zone-caching model include:
+    Low memory usage less than 25 MiB per instance based on cache aging.
+    Consistent first fill performance.
+    Good random write performance.
+    User configurable to match different workloads and QoS.
+
+Disadvantages
+    A small amount of disk is used for ZTL data and over-provisioning.
+    Lower random read performance.
+    Greater code complexity.
+
+Address space:
+    The zoned device mapper presents a smaller block device than
+    the amount of data available on the physical media. The extra
+    space is used to hold the meta data needed for managing the
+    data being stored on the drive performing COW block [re]mapping.
+    The 'shrink' is done by appropriately sizing the device via
+    dmsetup.
+    See the zdmadm utility will detect and size the device appropriaty.
+
+Map Strategy:
+    The block allocation strategy is to allocate from the start to the
+    end of the available space grabbing free zones and tagging them
+    with a stream id as needed. Currently ZDM supports 255 stream id's
+    which can be though of as 255 logs.
+
+Read Strategy:
+    Check each block requested in the bio to determine if the data
+    blocks are consecutively stored on disk. Pass as much per-bio
+    as possible through to the backing block device splitting bios as
+    neccessary to complete the I/O.
+
+Write Strategy:
+    Allocate space for entire bio on the backing block device
+    redirecting all incoming write requests to the most recently
+    written zone with the same stream id, until the zone is filled
+    or the bio is too large to fit and a new zone is opened.
+
+Flush/Sync Strategy:
+    On flush / fua bios the mapping stable state is also flushed to ensure
+    ZDM instance can be restored. In the case of power loss the ZDM instance
+    will restore to the state of most recent flush/fua.
+
+The ZDM mapping table uses a 4k physical addressing scheme.
+
+A ZDM instance currently requires about 12 MiB during first fill and 25 MiB
+during garbage collection.
+
+When the availble number of free zones becomes low the garbage collection
+will start. During GC valid data from the tail of the log is read,
+compacted and ordered by origin sector and written to the head of the
+log. The metadata is updated and flushed to disk and the GC'd zone's WP
+is reset is added to the free pool.
