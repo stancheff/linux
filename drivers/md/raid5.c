@@ -7019,12 +7019,14 @@ static int raid5_run(struct mddev *mddev)
 			    !bdev_get_queue(rdev->bdev)->
 						limits.discard_zeroes_data)
 				discard_supported = false;
+
 			/* Unfortunately, discard_zeroes_data is not currently
 			 * a guarantee - just a hint.  So we only allow DISCARD
 			 * if the sysadmin has confirmed that only safe devices
 			 * are in use by setting a module parameter.
 			 */
-			if (!devices_handle_discard_safely) {
+			if (!devices_handle_discard_safely &&
+			    !bdev_discard_raid_safe(rdev->bdev)) {
 				if (discard_supported) {
 					pr_info("md/raid456: discard support disabled due to uncertainty.\n");
 					pr_info("Set raid456.devices_handle_discard_safely=Y to override.\n");

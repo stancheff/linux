@@ -468,6 +468,7 @@ static int zoned_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	znd->trim = 1;
+	znd->raid5_trim = 0;
 
 	if (argc < 1) {
 		ti->error = "Invalid argument count";
@@ -497,6 +498,8 @@ static int zoned_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			znd->trim = 1;
 		if (!strcasecmp("nodiscard", argv[r]))
 			znd->trim = 0;
+		if (!strcasecmp("raid5_trim", argv[r]))
+			znd->raid5_trim = 1;
 
 		if (!strncasecmp("reserve=", argv[r], 8)) {
 			u64 mz_resv;
@@ -1836,6 +1839,7 @@ static void zoned_io_hints(struct dm_target *ti, struct queue_limits *limits)
 		limits->max_discard_sectors = 1 << 30;
 		limits->max_hw_discard_sectors = 1 << 30;
 		limits->discard_zeroes_data = 1;
+		limits->raid_discard_safe = znd->raid5_trim;
 	}
 }
 

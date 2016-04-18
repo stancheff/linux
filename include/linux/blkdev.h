@@ -274,11 +274,12 @@ struct queue_limits {
 	unsigned short		max_segments;
 	unsigned short		max_integrity_segments;
 
-	unsigned char		misaligned;
-	unsigned char		discard_misaligned;
-	unsigned char		cluster;
-	unsigned char		discard_zeroes_data;
 	unsigned char		raid_partial_stripes_expensive;
+	unsigned		misaligned:1;
+	unsigned		discard_misaligned:1;
+	unsigned		cluster:1;
+	unsigned		discard_zeroes_data:1;
+	unsigned		raid_discard_safe:1;
 };
 
 struct request_queue {
@@ -1325,6 +1326,19 @@ static inline unsigned int queue_discard_zeroes_data(struct request_queue *q)
 static inline unsigned int bdev_discard_zeroes_data(struct block_device *bdev)
 {
 	return queue_discard_zeroes_data(bdev_get_queue(bdev));
+}
+
+static inline unsigned int queue_raid_discard_safe(struct request_queue *q)
+{
+	if (queue_discard_zeroes_data(q) && q->limits.raid_discard_safe)
+		return 1;
+
+	return 0;
+}
+
+static inline unsigned int bdev_discard_raid_safe(struct block_device *bdev)
+{
+	return queue_raid_discard_safe(bdev_get_queue(bdev));
 }
 
 static inline unsigned int bdev_write_same(struct block_device *bdev)

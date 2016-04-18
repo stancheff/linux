@@ -745,6 +745,7 @@ struct zdm {
 	unsigned issue_close_zone:1;
 	unsigned is_empty:1;
 	unsigned trim:1;
+	unsigned raid5_trim:1;
 
 };
 
