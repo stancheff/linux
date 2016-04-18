@@ -624,7 +624,7 @@ static void skd_request_fn(struct request_queue *q)
 		count = blk_rq_sectors(req);
 		data_dir = rq_data_dir(req);
 
-		if (req->cmd_flags & REQ_FLUSH)
+		if (req->op == REQ_OP_FLUSH)
 			flush++;
 
 		if (req->cmd_flags & REQ_FUA)

@@ -239,6 +239,7 @@ enum req_op {
 	REQ_OP_WRITE,
 	REQ_OP_DISCARD,		/* request to discard sectors */
 	REQ_OP_WRITE_SAME,	/* write same block many times */
+	REQ_OP_FLUSH,		/* request for cache flush */
 };
 
 typedef unsigned int blk_qc_t;
