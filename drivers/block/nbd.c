@@ -3,7 +3,7 @@
  *
  * Note that you can not swap over this thing, yet. Seems to work but
  * deadlocks sometimes - you can not swap over TCP in general.
- * 
+ *
  * Copyright 1997-2000, 2008 Pavel Machek <pavel@ucw.cz>
  * Parts copyright 2001 Steven Whitehouse <steve@chygwyn.com>
  *
@@ -611,7 +611,7 @@ static void nbd_request_handler(struct request_queue *q)
 		__releases(q->queue_lock) __acquires(q->queue_lock)
 {
 	struct request *req;
-	
+
 	while ((req = blk_fetch_request(q)) != NULL) {
 		struct nbd_device *nbd;
 
@@ -693,7 +693,7 @@ static void nbd_parse_flags(struct nbd_device *nbd, struct block_device *bdev)
 	if (nbd->flags & NBD_FLAG_SEND_TRIM)
 		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, nbd->disk->queue);
 	if (nbd->flags & NBD_FLAG_SEND_FLUSH)
-		blk_queue_flush(nbd->disk->queue, REQ_FLUSH);
+		blk_queue_flush(nbd->disk->queue, REQ_PREFLUSH);
 	else
 		blk_queue_flush(nbd->disk->queue, 0);
 }
@@ -729,7 +729,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 		nbd_send_req(nbd, &sreq);
 		return 0;
 	}
- 
+
 	case NBD_CLEAR_SOCK:
 		sock_shutdown(nbd);
 		nbd_clear_que(nbd);
@@ -992,7 +992,7 @@ static void nbd_dbg_close(void)
 #endif
 
 /*
- * And here should be modules and kernel interface 
+ * And here should be modules and kernel interface
  *  (Just smiley confuses emacs :-)
  */
 

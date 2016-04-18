@@ -627,7 +627,7 @@ static void journal_write_unlocked(struct closure *cl)
 		bio->bi_iter.bi_sector	= PTR_OFFSET(k, i);
 		bio->bi_bdev	= ca->bdev;
 		bio->bi_op	= REQ_OP_WRITE;
-		bio->bi_rw	= REQ_SYNC|REQ_META|REQ_FLUSH|REQ_FUA;
+		bio->bi_rw	= REQ_SYNC|REQ_META|REQ_PREFLUSH|REQ_FUA;
 		bio->bi_iter.bi_size = sectors << 9;
 
 		bio->bi_end_io	= journal_write_endio;

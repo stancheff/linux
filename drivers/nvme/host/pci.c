@@ -661,7 +661,7 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	} else {
 		if (req->cmd_type == REQ_TYPE_DRV_PRIV)
 			memcpy(&cmnd, req->cmd, sizeof(cmnd));
-		else if (req->cmd_flags & REQ_FLUSH)
+		else if (req->cmd_flags & REQ_PREFLUSH)
 			nvme_setup_flush(ns, &cmnd);
 		else
 			nvme_setup_rw(ns, req, &cmnd);

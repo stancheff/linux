@@ -124,13 +124,13 @@ static int xor_init(struct loop_device *lo, const struct loop_info64 *info)
 
 static struct loop_func_table none_funcs = {
 	.number = LO_CRYPT_NONE,
-}; 
+};
 
 static struct loop_func_table xor_funcs = {
 	.number = LO_CRYPT_XOR,
 	.transfer = transfer_xor,
 	.init = xor_init
-}; 
+};
 
 /* xfer_funcs[0] is special - its release function is never called */
 static struct loop_func_table *xfer_funcs[MAX_LO_CRYPT] = {
@@ -943,7 +943,7 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 	mapping_set_gfp_mask(mapping, lo->old_gfp_mask & ~(__GFP_IO|__GFP_FS));
 
 	if (!(lo_flags & LO_FLAGS_READ_ONLY) && file->f_op->fsync)
-		blk_queue_flush(lo->lo_queue, REQ_FLUSH);
+		blk_queue_flush(lo->lo_queue, REQ_PREFLUSH);
 
 	loop_update_dio(lo);
 	set_capacity(lo->lo_disk, size);

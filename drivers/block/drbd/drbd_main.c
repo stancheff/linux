@@ -1609,7 +1609,7 @@ static u32 bio_flags_to_wire(struct drbd_connection *connection,
 	if (connection->agreed_pro_version >= 95)
 		return  (bio->bi_rw & REQ_SYNC ? DP_RW_SYNC : 0) |
 			(bio->bi_rw & REQ_FUA ? DP_FUA : 0) |
-			(bio->bi_rw & REQ_FLUSH ? DP_FLUSH : 0) |
+			(bio->bi_rw & REQ_PREFLUSH ? DP_FLUSH : 0) |
 			(bio->bi_op == REQ_OP_DISCARD ? DP_DISCARD : 0);
 	else
 		return bio->bi_rw & REQ_SYNC ? DP_RW_SYNC : 0;
@@ -2762,7 +2762,7 @@ enum drbd_ret_code drbd_create_device(struct drbd_config_context *adm_ctx, unsig
 	q->backing_dev_info.congested_data = device;
 
 	blk_queue_make_request(q, drbd_make_request);
-	blk_queue_flush(q, REQ_FLUSH | REQ_FUA);
+	blk_queue_flush(q, REQ_PREFLUSH | REQ_FUA);
 	/* Setting the max_hw_sectors to an odd value of 8kibyte here
 	   This triggers a max_bio_size message upon first attach or connect */
 	blk_queue_max_hw_sectors(q, DRBD_MAX_BIO_SIZE_SAFE >> 8);

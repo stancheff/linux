@@ -546,7 +546,7 @@ static void update_flush(ide_drive_t *drive)
 		       drive->name, barrier ? "" : "not ");
 
 		if (barrier) {
-			flush = REQ_FLUSH;
+			flush = REQ_PREFLUSH;
 			blk_queue_prep_rq(drive->queue, idedisk_prep_fn);
 		}
 	}

@@ -695,7 +695,7 @@ iblock_execute_rw(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 		if (q->flush_flags & REQ_FUA) {
 			if (cmd->se_cmd_flags & SCF_FUA)
 				op_flags = WRITE_FUA;
-			else if (!(q->flush_flags & REQ_FLUSH))
+			else if (!(q->flush_flags & REQ_PREFLUSH))
 				op_flags = WRITE_FUA;
 		}
 	} else {
@@ -838,7 +838,7 @@ static bool iblock_get_write_cache(struct se_device *dev)
 	struct block_device *bd = ib_dev->ibd_bd;
 	struct request_queue *q = bdev_get_queue(bd);
 
-	return q->flush_flags & REQ_FLUSH;
+	return q->flush_flags & REQ_PREFLUSH;
 }
 
 static const struct target_backend_ops iblock_ops = {

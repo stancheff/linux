@@ -494,7 +494,7 @@ static void virtblk_update_cache_mode(struct virtio_device *vdev)
 	struct virtio_blk *vblk = vdev->priv;
 
 	if (writeback)
-		blk_queue_flush(vblk->disk->queue, REQ_FLUSH);
+		blk_queue_flush(vblk->disk->queue, REQ_PREFLUSH);
 	else
 		blk_queue_flush(vblk->disk->queue, 0);
 
