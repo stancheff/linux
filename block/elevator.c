@@ -511,7 +511,7 @@ void elv_merge_requests(struct request_queue *q, struct request *rq,
 			     struct request *next)
 {
 	struct elevator_queue *e = q->elevator;
-	const int next_sorted = next->cmd_flags & REQ_SORTED;
+	const int next_sorted = !!(next->cmd_flags & REQ_SORTED);
 
 	if (next_sorted && e->type->ops.elevator_merge_req_fn)
 		e->type->ops.elevator_merge_req_fn(q, rq, next);
@@ -717,7 +717,7 @@ void elv_put_request(struct request_queue *q, struct request *rq)
 		e->type->ops.elevator_put_req_fn(rq);
 }
 
-int elv_may_queue(struct request_queue *q, int rw)
+int elv_may_queue(struct request_queue *q, u64 rw)
 {
 	struct elevator_queue *e = q->elevator;
 
