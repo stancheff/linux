@@ -284,6 +284,35 @@ static int blk_zoned_action_ioctl(struct block_device *bdev, fmode_t mode,
 		return -EFAULT;
 	}
 
+	/*
+	 * When the low bit is set force ATA passthrough try to work around
+	 * older SAS HBA controllers that don't support ZBC to ZAC translation.
+	 *
+	 * When the low bit is clear follow the normal path but also correct
+	 * for ~0ul LBA means 'for all lbas'.
+	 *
+	 * NB: We should do extra checking here to see if the user specified
+	 *     the entire block device as opposed to a partition of the
+	 *     device....
+	 */
+	if (arg & 1) {
+		bi_rw |= REQ_META;
+		if (arg != ~0ul)
+			arg &= ~1ul; /* ~1 :: 0xFF...FE */
+	} else {
+		if (arg == ~1ul)
+			arg = ~0ul;
+	}
+
+	/*
+	 * When acting on zones we explicitly disallow using a partition.
+	 */
+	if (bdev != bdev->bd_contains) {
+		pr_err("%s: All zone operations disallowed on this device\n",
+			__func__);
+		return -EFAULT;
+	}
+
 	switch (cmd) {
 	case BLKOPENZONE:
 		bi_rw |= REQ_OPEN_ZONE;
