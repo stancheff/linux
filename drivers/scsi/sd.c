@@ -52,6 +52,7 @@
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
 #include <linux/pr.h>
+#include <linux/ata.h>
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
 
@@ -794,7 +795,7 @@ static void sd_config_write_same(struct scsi_disk *sdkp)
 	struct request_queue *q = sdkp->disk->queue;
 	unsigned int logical_block_size = sdkp->device->sector_size;
 
-	if (sdkp->device->no_write_same) {
+	if (sdkp->device->no_write_same && !sdkp->device->sct_write_same) {
 		sdkp->max_ws_blocks = 0;
 		goto out;
 	}
@@ -2761,24 +2762,26 @@ static void sd_read_write_same(struct scsi_disk *sdkp, unsigned char *buffer)
 {
 	struct scsi_device *sdev = sdkp->device;
 
-	if (sdev->host->no_write_same) {
-		sdev->no_write_same = 1;
-
-		return;
-	}
-
 	if (scsi_report_opcode(sdev, buffer, SD_BUF_SIZE, INQUIRY) < 0) {
-		/* too large values might cause issues with arcmsr */
-		int vpd_buf_len = 64;
-
 		sdev->no_report_opcodes = 1;
 
 		/* Disable WRITE SAME if REPORT SUPPORTED OPERATION
 		 * CODES is unsupported and the device has an ATA
 		 * Information VPD page (SAT).
 		 */
-		if (!scsi_get_vpd_page(sdev, 0x89, buffer, vpd_buf_len))
+		if (!scsi_get_vpd_page(sdev, 0x89, buffer, SD_BUF_SIZE)) {
 			sdev->no_write_same = 1;
+			if (ata_id_sct_write_same((u16 *)&buffer[60])) {
+				sdev->sct_write_same = 1;
+				sdkp->max_ws_blocks = SD_MAX_WS16_BLOCKS;
+			}
+		}
+	}
+
+	if (sdev->host->no_write_same) {
+		sdev->no_write_same = 1;
+
+		return;
 	}
 
 	if (scsi_report_opcode(sdev, buffer, SD_BUF_SIZE, WRITE_SAME_16) == 1)

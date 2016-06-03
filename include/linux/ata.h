@@ -104,6 +104,7 @@ enum {
 	ATA_ID_CFA_KEY_MGMT	= 162,
 	ATA_ID_CFA_MODES	= 163,
 	ATA_ID_DATA_SET_MGMT	= 169,
+	ATA_ID_SCT_CMD_XPORT	= 206,
 	ATA_ID_ROT_SPEED	= 217,
 	ATA_ID_PIO4		= (1 << 1),
 
@@ -778,6 +779,48 @@ static inline bool ata_id_sense_reporting_enabled(const u16 *id)
 }
 
 /**
+ *
+ * Word: 206 - SCT Command Transport
+ *    15:12 - Vendor Specific
+ *     11:6 - Reserved
+ *        5 - SCT Command Transport Data Tables supported
+ *        4 - SCT Command Transport Features Control supported
+ *        3 - SCT Command Transport Error Recovery Control supported
+ *        2 - SCT Command Transport Write Same supported
+ *        1 - SCT Command Transport Long Sector Access supported
+ *        0 - SCT Command Transport supported
+ */
+static inline bool ata_id_sct_data_tables(const u16 *id)
+{
+	return id[ATA_ID_SCT_CMD_XPORT] & (1 << 5) ? true : false;
+}
+
+static inline bool ata_id_sct_features_ctrl(const u16 *id)
+{
+	return id[ATA_ID_SCT_CMD_XPORT] & (1 << 4) ? true : false;
+}
+
+static inline bool ata_id_sct_error_recovery_ctrl(const u16 *id)
+{
+	return id[ATA_ID_SCT_CMD_XPORT] & (1 << 3) ? true : false;
+}
+
+static inline bool ata_id_sct_write_same(const u16 *id)
+{
+	return id[ATA_ID_SCT_CMD_XPORT] & (1 << 2) ? true : false;
+}
+
+static inline bool ata_id_sct_long_sector_access(const u16 *id)
+{
+	return id[ATA_ID_SCT_CMD_XPORT] & (1 << 1) ? true : false;
+}
+
+static inline bool ata_id_sct_supported(const u16 *id)
+{
+	return id[ATA_ID_SCT_CMD_XPORT] & (1 << 0) ? true : false;
+}
+
+/**
  *	ata_id_major_version	-	get ATA level of drive
  *	@id: Identify data
  *
@@ -1058,6 +1101,21 @@ static inline void ata_id_to_hd_driveid(u16 *id)
 	*(u64 *)&id[ATA_ID_LBA_CAPACITY_2] =
 		ata_id_u64(id, ATA_ID_LBA_CAPACITY_2);
 #endif
+}
+
+/**
+ * _lba_to_cmd_ata() - Copy lba48 to ATA command
+ * @cmd: ATA command as an array of bytes
+ * @_lba: lba48 in the low 48 bits
+ */
+static inline void _lba_to_cmd_ata(u8 *cmd, u64 _lba)
+{
+	cmd[1] =  _lba	      & 0xff;
+	cmd[3] = (_lba >>  8) & 0xff;
+	cmd[5] = (_lba >> 16) & 0xff;
+	cmd[0] = (_lba >> 24) & 0xff;
+	cmd[2] = (_lba >> 32) & 0xff;
+	cmd[4] = (_lba >> 40) & 0xff;
 }
 
 /*
