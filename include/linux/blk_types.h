@@ -162,6 +162,10 @@ enum rq_flag_bits {
 	__REQ_FUA,		/* forced unit access */
 	__REQ_FLUSH,		/* request for cache flush */
 
+	__REQ_REPORT_ZONES,	/* Zoned device: Report Zones */
+	__REQ_OPEN_ZONE,	/* Zoned device: Open Zone */
+	__REQ_CLOSE_ZONE,	/* Zoned device: Close Zone */
+
 	/* bio only flags */
 	__REQ_RAHEAD,		/* read ahead, can fail anytime */
 	__REQ_THROTTLED,	/* This bio has already been subjected to
@@ -202,20 +206,27 @@ enum rq_flag_bits {
 #define REQ_WRITE_SAME		(1ULL << __REQ_WRITE_SAME)
 #define REQ_NOIDLE		(1ULL << __REQ_NOIDLE)
 #define REQ_INTEGRITY		(1ULL << __REQ_INTEGRITY)
+#define REQ_REPORT_ZONES	(1ULL << __REQ_REPORT_ZONES)
+#define REQ_OPEN_ZONE		(1ULL << __REQ_OPEN_ZONE)
+#define REQ_CLOSE_ZONE		(1ULL << __REQ_CLOSE_ZONE)
+#define REQ_RESET_ZONE		(REQ_REPORT_ZONES)
+#define REQ_ZONED_CMDS \
+	(REQ_OPEN_ZONE | REQ_CLOSE_ZONE | REQ_RESET_ZONE | REQ_REPORT_ZONES)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
 #define REQ_COMMON_MASK \
 	(REQ_WRITE | REQ_FAILFAST_MASK | REQ_SYNC | REQ_META | REQ_PRIO | \
 	 REQ_DISCARD | REQ_WRITE_SAME | REQ_NOIDLE | REQ_FLUSH | REQ_FUA | \
-	 REQ_SECURE | REQ_INTEGRITY | REQ_NOMERGE)
+	 REQ_SECURE | REQ_INTEGRITY | REQ_NOMERGE | REQ_ZONED_CMDS)
 #define REQ_CLONE_MASK		REQ_COMMON_MASK
-
-#define BIO_NO_ADVANCE_ITER_MASK	(REQ_DISCARD|REQ_WRITE_SAME)
+#define BIO_NO_ADVANCE_ITER_MASK \
+	(REQ_DISCARD | REQ_WRITE_SAME | REQ_ZONED_CMDS)
 
 /* This mask is used for both bio and request merge checking */
 #define REQ_NOMERGE_FLAGS \
-	(REQ_NOMERGE | REQ_STARTED | REQ_SOFTBARRIER | REQ_FLUSH | REQ_FUA | REQ_FLUSH_SEQ)
+	(REQ_NOMERGE | REQ_STARTED | REQ_SOFTBARRIER | \
+	 REQ_FLUSH | REQ_FUA | REQ_FLUSH_SEQ | REQ_ZONED_CMDS)
 
 #define REQ_RAHEAD		(1ULL << __REQ_RAHEAD)
 #define REQ_THROTTLED		(1ULL << __REQ_THROTTLED)
