@@ -159,7 +159,7 @@ bool blk_mq_can_queue(struct blk_mq_hw_ctx *hctx)
 EXPORT_SYMBOL(blk_mq_can_queue);
 
 static void blk_mq_rq_ctx_init(struct request_queue *q, struct blk_mq_ctx *ctx,
-			       struct request *rq, unsigned int rw_flags)
+			       struct request *rq, u64 rw_flags)
 {
 	if (blk_queue_io_stat(q))
 		rw_flags |= REQ_IO_STAT;
