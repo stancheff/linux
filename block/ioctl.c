@@ -7,6 +7,7 @@
 #include <linux/backing-dev.h>
 #include <linux/fs.h>
 #include <linux/blktrace_api.h>
+#include <linux/blkzoned_api.h>
 #include <linux/pr.h>
 #include <asm/uaccess.h>
 
@@ -193,6 +194,109 @@ int blkdev_reread_part(struct block_device *bdev)
 	return res;
 }
 EXPORT_SYMBOL(blkdev_reread_part);
+
+static int blk_zoned_report_ioctl(struct block_device *bdev, fmode_t mode,
+		void __user *parg)
+{
+	int error = -EFAULT;
+	gfp_t gfp = GFP_KERNEL;
+	struct bdev_zone_report_io *zone_iodata = NULL;
+	int order = 0;
+	struct page *pgs = NULL;
+	u32 alloc_size = PAGE_SIZE;
+	unsigned long op_flags = 0;
+	u8 opt = 0;
+
+	if (!(mode & FMODE_READ))
+		return -EBADF;
+
+	zone_iodata = (void *)get_zeroed_page(gfp);
+	if (!zone_iodata) {
+		error = -ENOMEM;
+		goto report_zones_out;
+	}
+	if (copy_from_user(zone_iodata, parg, sizeof(*zone_iodata))) {
+		error = -EFAULT;
+		goto report_zones_out;
+	}
+	if (zone_iodata->data.in.return_page_count > alloc_size) {
+		int npages;
+
+		alloc_size = zone_iodata->data.in.return_page_count;
+		npages = (alloc_size + PAGE_SIZE - 1) / PAGE_SIZE;
+		order =  ilog2(roundup_pow_of_two(npages));
+		pgs = alloc_pages(gfp, order);
+		if (pgs) {
+			void *mem = page_address(pgs);
+
+			if (!mem) {
+				error = -ENOMEM;
+				goto report_zones_out;
+			}
+			memset(mem, 0, alloc_size);
+			memcpy(mem, zone_iodata, sizeof(*zone_iodata));
+			free_page((unsigned long)zone_iodata);
+			zone_iodata = mem;
+		} else {
+			/* Result requires DMA capable memory */
+			pr_err("Not enough memory available for request.\n");
+			error = -ENOMEM;
+			goto report_zones_out;
+		}
+	}
+	opt = zone_iodata->data.in.report_option & 0x7F;
+	error = blkdev_issue_zone_report(bdev, op_flags,
+			zone_iodata->data.in.zone_locator_lba, opt,
+			pgs ? pgs : virt_to_page(zone_iodata),
+			alloc_size, GFP_KERNEL);
+
+	if (error)
+		goto report_zones_out;
+
+	if (copy_to_user(parg, zone_iodata, alloc_size))
+		error = -EFAULT;
+
+report_zones_out:
+	if (pgs)
+		__free_pages(pgs, order);
+	else if (zone_iodata)
+		free_page((unsigned long)zone_iodata);
+	return error;
+}
+
+static int blk_zoned_action_ioctl(struct block_device *bdev, fmode_t mode,
+				  unsigned int cmd, unsigned long arg)
+{
+	unsigned long op_flags = 0;
+
+	if (!(mode & FMODE_WRITE))
+		return -EBADF;
+
+	/*
+	 * When acting on zones we explicitly disallow using a partition.
+	 */
+	if (bdev != bdev->bd_contains) {
+		pr_err("%s: All zone operations disallowed on this device\n",
+			__func__);
+		return -EFAULT;
+	}
+
+	switch (cmd) {
+	case BLKOPENZONE:
+		op_flags |= REQ_OPEN_ZONE;
+		break;
+	case BLKCLOSEZONE:
+		op_flags |= REQ_CLOSE_ZONE;
+		break;
+	case BLKRESETZONE:
+		op_flags |= REQ_RESET_ZONE;
+		break;
+	default:
+		pr_err("%s: Unknown action: %u\n", __func__, cmd);
+		WARN_ON(1);
+	}
+	return blkdev_issue_zone_action(bdev, op_flags, arg, GFP_KERNEL);
+}
 
 static int blk_ioctl_discard(struct block_device *bdev, fmode_t mode,
 		unsigned long arg, unsigned long flags)
@@ -568,6 +672,12 @@ int blkdev_ioctl(struct block_device *bdev, fmode_t mode, unsigned cmd,
 	case BLKTRACESETUP:
 	case BLKTRACETEARDOWN:
 		return blk_trace_ioctl(bdev, cmd, argp);
+	case BLKREPORT:
+		return blk_zoned_report_ioctl(bdev, mode, argp);
+	case BLKOPENZONE:
+	case BLKCLOSEZONE:
+	case BLKRESETZONE:
+		return blk_zoned_action_ioctl(bdev, mode, cmd, arg);
 	case IOC_PR_REGISTER:
 		return blkdev_pr_register(bdev, argp);
 	case IOC_PR_RESERVE:
