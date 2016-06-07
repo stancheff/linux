@@ -245,6 +245,9 @@ static int blk_zoned_report_ioctl(struct block_device *bdev, fmode_t mode,
 		}
 	}
 	opt = zone_iodata->data.in.report_option & 0x7F;
+	if (zone_iodata->data.in.report_option & ZOPT_USE_ATA_PASS)
+		op_flags |= REQ_META;
+
 	error = blkdev_issue_zone_report(bdev, op_flags,
 			zone_iodata->data.in.zone_locator_lba, opt,
 			pgs ? pgs : virt_to_page(zone_iodata),
@@ -271,6 +274,35 @@ static int blk_zoned_action_ioctl(struct block_device *bdev, fmode_t mode,
 
 	if (!(mode & FMODE_WRITE))
 		return -EBADF;
+
+	/*
+	 * When acting on zones we explicitly disallow using a partition.
+	 */
+	if (bdev != bdev->bd_contains) {
+		pr_err("%s: All zone operations disallowed on this device\n",
+			__func__);
+		return -EFAULT;
+	}
+
+	/*
+	 * When the low bit is set force ATA passthrough try to work around
+	 * older SAS HBA controllers that don't support ZBC to ZAC translation.
+	 *
+	 * When the low bit is clear follow the normal path but also correct
+	 * for ~0ul LBA means 'for all lbas'.
+	 *
+	 * NB: We should do extra checking here to see if the user specified
+	 *     the entire block device as opposed to a partition of the
+	 *     device....
+	 */
+	if (arg & 1) {
+		op_flags |= REQ_META;
+		if (arg != ~0ul)
+			arg &= ~1ul; /* ~1 :: 0xFF...FE */
+	} else {
+		if (arg == ~1ul)
+			arg = ~0ul;
+	}
 
 	/*
 	 * When acting on zones we explicitly disallow using a partition.

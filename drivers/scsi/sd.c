@@ -53,6 +53,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/pr.h>
 #include <linux/blkzoned_api.h>
+#include <linux/ata.h>
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
 
@@ -1182,12 +1183,29 @@ static int sd_setup_zoned_cmnd(struct scsi_cmnd *cmd)
 
 		cmd->cmd_len = 16;
 		memset(cmd->cmnd, 0, cmd->cmd_len);
-		cmd->cmnd[0] = ZBC_IN;
-		cmd->cmnd[1] = ZI_REPORT_ZONES;
-		put_unaligned_be64(sector, &cmd->cmnd[2]);
-		put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
-		/* FUTURE ... when streamid is available */
-		/* cmd->cmnd[14] = bio_get_streamid(bio); */
+		if (rq->cmd_flags & REQ_META) {
+			cmd->cmnd[0] = ATA_16;
+			cmd->cmnd[1] = (0x6 << 1) | 1;
+			cmd->cmnd[2] = 0x0e;
+			/* FUTURE ... when streamid is available */
+			/* cmd->cmnd[3] = bio_get_streamid(bio); */
+			cmd->cmnd[4] = ATA_SUBCMD_ZAC_MGMT_IN_REPORT_ZONES;
+			cmd->cmnd[5] = ((nr_bytes / 512) >> 8) & 0xff;
+			cmd->cmnd[6] = (nr_bytes / 512) & 0xff;
+
+			_lba_to_cmd_ata(&cmd->cmnd[7], sector);
+
+			cmd->cmnd[13] = 1 << 6;
+			cmd->cmnd[14] = ATA_CMD_ZAC_MGMT_IN;
+		} else {
+			cmd->cmnd[0] = ZBC_IN;
+			cmd->cmnd[1] = ZI_REPORT_ZONES;
+			put_unaligned_be64(sector, &cmd->cmnd[2]);
+			put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
+			/* FUTURE ... when streamid is available */
+			/* cmd->cmnd[14] = bio_get_streamid(bio); */
+		}
+
 		cmd->sc_data_direction = DMA_FROM_DEVICE;
 		cmd->sdb.length = nr_bytes;
 		cmd->transfersize = sdp->sector_size;
@@ -1208,14 +1226,29 @@ static int sd_setup_zoned_cmnd(struct scsi_cmnd *cmd)
 	cmd->cmd_len = 16;
 	memset(cmd->cmnd, 0, cmd->cmd_len);
 	memset(&cmd->sdb, 0, sizeof(cmd->sdb));
-	cmd->cmnd[0] = ZBC_OUT;
-	cmd->cmnd[1] = ZO_OPEN_ZONE;
-	if (rq->cmd_flags & REQ_CLOSE_ZONE)
-		cmd->cmnd[1] = ZO_CLOSE_ZONE;
-	if (rq->cmd_flags & REQ_RESET_ZONE)
-		cmd->cmnd[1] = ZO_RESET_WRITE_POINTER;
-	cmd->cmnd[14] = allbit;
-	put_unaligned_be64(sector, &cmd->cmnd[2]);
+	if (rq->cmd_flags & REQ_META) {
+		cmd->cmnd[0] = ATA_16;
+		cmd->cmnd[1] = (3 << 1) | 1;
+		cmd->cmnd[3] = allbit;
+		cmd->cmnd[4] = ATA_SUBCMD_ZAC_MGMT_OUT_RESET_WRITE_POINTER;
+		if (rq->cmd_flags & REQ_OPEN_ZONE)
+			cmd->cmnd[4] = ATA_SUBCMD_ZAC_MGMT_OUT_OPEN_ZONE;
+		if (rq->cmd_flags & REQ_CLOSE_ZONE)
+			cmd->cmnd[4] = ATA_SUBCMD_ZAC_MGMT_OUT_CLOSE_ZONE;
+		_lba_to_cmd_ata(&cmd->cmnd[7], sector);
+		cmd->cmnd[13] = 1 << 6;
+		cmd->cmnd[14] = ATA_CMD_ZAC_MGMT_OUT;
+	} else {
+		cmd->cmnd[0] = ZBC_OUT;
+		cmd->cmnd[1] = ZO_OPEN_ZONE;
+		if (rq->cmd_flags & REQ_CLOSE_ZONE)
+			cmd->cmnd[1] = ZO_CLOSE_ZONE;
+		if (rq->cmd_flags & REQ_RESET_ZONE)
+			cmd->cmnd[1] = ZO_RESET_WRITE_POINTER;
+		cmd->cmnd[14] = allbit;
+		put_unaligned_be64(sector, &cmd->cmnd[2]);
+	}
+
 	cmd->transfersize = 0;
 	cmd->underflow = 0;
 	cmd->allowed = SD_MAX_RETRIES;
@@ -2811,7 +2844,7 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 {
 	unsigned char *buffer;
 	u16 rot;
-	const int vpd_len = 64;
+	const int vpd_len = 512;
 
 	buffer = kmalloc(vpd_len, GFP_KERNEL);
 
@@ -2828,6 +2861,13 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 	}
 
 	sdkp->zoned = (buffer[8] >> 4) & 3;
+	if (sdkp->zoned != 1) {
+		struct scsi_device *sdev = sdkp->device;
+
+		/* buf size is 512, page is 60 + 512, we need page 206 */
+		if (!scsi_get_vpd_page(sdev, 0x89, buffer, SD_BUF_SIZE))
+			sdkp->zoned = ata_id_zoned_cap((u16 *)&buffer[60]);
+	}
 
  out:
 	kfree(buffer);
