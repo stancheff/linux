@@ -52,6 +52,7 @@
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
 #include <linux/pr.h>
+#include <linux/blkzoned_api.h>
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
 
@@ -1133,11 +1134,105 @@ static int sd_setup_read_write_cmnd(struct scsi_cmnd *SCpnt)
 	return ret;
 }
 
+static int sd_setup_zoned_cmnd(struct scsi_cmnd *cmd)
+{
+	struct request *rq = cmd->request;
+	struct scsi_device *sdp = cmd->device;
+	struct scsi_disk *sdkp = scsi_disk(rq->rq_disk);
+	struct bio *bio = rq->bio;
+	sector_t sector = blk_rq_pos(rq);
+	struct gendisk *disk = rq->rq_disk;
+	unsigned int nr_bytes = blk_rq_bytes(rq);
+	int ret = BLKPREP_KILL;
+	u8 allbit = 0;
+
+	if (rq->cmd_flags & REQ_REPORT_ZONES && rq_data_dir(rq) == READ) {
+		WARN_ON(nr_bytes == 0);
+
+		/*
+		 * For conventional drives generate a report that shows a
+		 * large single convetional zone the size of the block device
+		 */
+		if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC) {
+			void *src;
+			struct bdev_zone_report *conv;
+
+			if (nr_bytes < sizeof(struct bdev_zone_report))
+				goto out;
+
+			src = kmap_atomic(bio->bi_io_vec->bv_page);
+			conv = src + bio->bi_io_vec->bv_offset;
+			conv->descriptor_count = cpu_to_be32(1);
+			conv->same_field = ZS_ALL_SAME;
+			conv->maximum_lba = cpu_to_be64(disk->part0.nr_sects);
+			kunmap_atomic(src);
+			goto out;
+		}
+
+		ret = scsi_init_io(cmd);
+		if (ret != BLKPREP_OK)
+			goto out;
+
+		cmd = rq->special;
+		if (sdp->changed) {
+			pr_err("SCSI disk has been changed or is not present.");
+			ret = BLKPREP_KILL;
+			goto out;
+		}
+
+		cmd->cmd_len = 16;
+		memset(cmd->cmnd, 0, cmd->cmd_len);
+		cmd->cmnd[0] = ZBC_IN;
+		cmd->cmnd[1] = ZI_REPORT_ZONES;
+		put_unaligned_be64(sector, &cmd->cmnd[2]);
+		put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
+		/* FUTURE ... when streamid is available */
+		/* cmd->cmnd[14] = bio_get_streamid(bio); */
+		cmd->sc_data_direction = DMA_FROM_DEVICE;
+		cmd->sdb.length = nr_bytes;
+		cmd->transfersize = sdp->sector_size;
+		cmd->underflow = 0;
+		cmd->allowed = SD_MAX_RETRIES;
+		ret = BLKPREP_OK;
+		goto out;
+	}
+
+	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC)
+		goto out;
+
+	if (sector == ~0ul) {
+		allbit = 1;
+		sector = 0;
+	}
+
+	cmd->cmd_len = 16;
+	memset(cmd->cmnd, 0, cmd->cmd_len);
+	memset(&cmd->sdb, 0, sizeof(cmd->sdb));
+	cmd->cmnd[0] = ZBC_OUT;
+	cmd->cmnd[1] = ZO_OPEN_ZONE;
+	if (rq->cmd_flags & REQ_CLOSE_ZONE)
+		cmd->cmnd[1] = ZO_CLOSE_ZONE;
+	if (rq->cmd_flags & REQ_RESET_ZONE)
+		cmd->cmnd[1] = ZO_RESET_WRITE_POINTER;
+	cmd->cmnd[14] = allbit;
+	put_unaligned_be64(sector, &cmd->cmnd[2]);
+	cmd->transfersize = 0;
+	cmd->underflow = 0;
+	cmd->allowed = SD_MAX_RETRIES;
+	cmd->sc_data_direction = DMA_NONE;
+
+	ret = BLKPREP_OK;
+out:
+	return ret;
+}
+
 static int sd_init_command(struct scsi_cmnd *cmd)
 {
 	struct request *rq = cmd->request;
 
-	if (rq->cmd_flags & REQ_DISCARD)
+	if (rq->cmd_flags & REQ_ZONED_CMDS)
+		return sd_setup_zoned_cmnd(cmd);
+	else if (rq->cmd_flags & REQ_DISCARD)
 		return sd_setup_discard_cmnd(cmd);
 	else if (rq->cmd_flags & REQ_WRITE_SAME)
 		return sd_setup_write_same_cmnd(cmd);
@@ -2731,6 +2826,8 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 		queue_flag_set_unlocked(QUEUE_FLAG_NONROT, sdkp->disk->queue);
 		queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, sdkp->disk->queue);
 	}
+
+	sdkp->zoned = (buffer[8] >> 4) & 3;
 
  out:
 	kfree(buffer);

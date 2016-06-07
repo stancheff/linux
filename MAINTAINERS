@@ -12662,6 +12662,15 @@ F:	Documentation/networking/z8530drv.txt
 F:	drivers/net/hamradio/*scc.c
 F:	drivers/net/hamradio/z8530.h
 
+ZBC AND ZBC BLOCK DEVICES
+M:	Shaun Tancheff <shaun.tancheff@seagate.com>
+W:	http://seagate.com
+W:	https://github.com/Seagate/ZDM-Device-Mapper
+L:	linux-block@vger.kernel.org
+S:	Maintained
+F:	include/linux/blkzoned_api.h
+F:	include/uapi/linux/blkzoned_api.h
+
 ZBUD COMPRESSED PAGE ALLOCATOR
 M:	Seth Jennings <sjenning@redhat.com>
 L:	linux-mm@kvack.org
