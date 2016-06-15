@@ -1316,6 +1316,21 @@ struct mlx5_core_event_handler {
 		      void *data);
 };
 
+#if !defined(CONFIG_MLX5_CORE_EN)
+static u16 _mode = 0;
+
+static int mlx5_devlink_eswitch_mode_set(struct devlink *devlink, u16 mode)
+{
+	_mode = mode;
+	return -EPERM;
+}
+
+static int mlx5_devlink_eswitch_mode_get(struct devlink *devlink, u16 *mode)
+{
+	return _mode;
+}
+#endif
+
 static const struct devlink_ops mlx5_devlink_ops = {
 	.eswitch_mode_set = mlx5_devlink_eswitch_mode_set,
 	.eswitch_mode_get = mlx5_devlink_eswitch_mode_get,
