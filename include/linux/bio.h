@@ -79,7 +79,12 @@ static inline bool bio_has_data(struct bio *bio)
 
 static inline bool bio_no_advance_iter(struct bio *bio)
 {
-	return bio_op(bio) == REQ_OP_DISCARD || bio_op(bio) == REQ_OP_WRITE_SAME;
+	return bio_op(bio) == REQ_OP_DISCARD ||
+	       bio_op(bio) == REQ_OP_WRITE_SAME ||
+	       bio_op(bio) == REQ_OP_ZONE_REPORT ||
+	       bio_op(bio) == REQ_OP_ZONE_OPEN ||
+	       bio_op(bio) == REQ_OP_ZONE_CLOSE ||
+	       bio_op(bio) == REQ_OP_ZONE_RESET;
 }
 
 static inline bool bio_is_rw(struct bio *bio)
