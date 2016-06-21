@@ -426,9 +426,10 @@ out:
 }
 
 int sd_zbc_setup_read_write(struct scsi_disk *sdkp, struct request *rq,
-			    sector_t sector, unsigned int num_sectors)
+			    sector_t sector, unsigned int *num_sectors)
 {
 	struct blk_zone *zone;
+	unsigned int sectors = *num_sectors;
 	int ret = BLKPREP_OK;
 	unsigned long flags;
 
@@ -478,12 +479,32 @@ int sd_zbc_setup_read_write(struct scsi_disk *sdkp, struct request *rq,
 			ret = BLKPREP_KILL;
 			goto out;
 		}
-		zone->wp += num_sectors;
-	} else if (blk_zone_is_smr(zone) && (zone->wp <= sector)) {
+		zone->wp += sectors;
+	} else if (zone->type == BLK_ZONE_TYPE_SEQWRITE_REQ &&
+		   zone->wp <= sector + sectors) {
+		if (zone->wp <= sector) {
+			/* Read beyond WP: clear request buffer */
+			struct req_iterator iter;
+			struct bio_vec bvec;
+			void *buf;
+			sd_zbc_debug(sdkp,
+				     "Read beyond wp %zu+%u/%zu\n",
+				     sector, sectors, zone->wp);
+			rq_for_each_segment(bvec, rq, iter) {
+				buf = bvec_kmap_irq(&bvec, &flags);
+				memset(buf, 0, bvec.bv_len);
+				flush_dcache_page(bvec.bv_page);
+				bvec_kunmap_irq(buf, &flags);
+			}
+			ret = BLKPREP_DONE;
+			goto out;
+		}
+		/* Read straddle WP position: limit request size */
+		*num_sectors = zone->wp - sector;
 		sd_zbc_debug(sdkp,
-			     "Read beyond wp %zu/%zu\n",
-			     sector, zone->wp);
-		ret = BLKPREP_DONE;
+			     "Read straddle wp %zu+%u/%zu => %zu+%u\n",
+			     sector, sectors, zone->wp,
+			     sector, *num_sectors);
 	}
 
 out:

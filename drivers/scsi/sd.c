@@ -881,7 +881,7 @@ static int sd_setup_write_same_cmnd(struct scsi_cmnd *cmd)
 
 	if (sdkp->zoned == 1 || sdp->type == TYPE_ZBC) {
 		/* sd_zbc_setup_read_write uses block layer sector units */
-		ret = sd_zbc_setup_read_write(sdkp, rq, sector, nr_sectors);
+		ret = sd_zbc_setup_read_write(sdkp, rq, sector, &nr_sectors);
 		if (ret != BLKPREP_OK)
 			return ret;
 	}
@@ -1007,7 +1007,7 @@ static int sd_setup_read_write_cmnd(struct scsi_cmnd *SCpnt)
 
 	if (sdkp->zoned == 1 || sdp->type == TYPE_ZBC) {
 		/* sd_zbc_setup_read_write uses block layer sector units */
-		ret = sd_zbc_setup_read_write(sdkp, rq, block, this_count);
+		ret = sd_zbc_setup_read_write(sdkp, rq, block, &this_count);
 		if (ret != BLKPREP_OK)
 			goto out;
 	}
