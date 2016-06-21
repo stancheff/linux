@@ -2257,9 +2257,10 @@ static void sd_read_zones(struct scsi_disk *sdkp, unsigned char *buffer)
 		/* The max_lba field is the capacity of a zoned device */
 		lba = get_unaligned_be64(&buffer[8]);
 		if (lba + 1 > sdkp->capacity) {
-			sd_printk(KERN_WARNING, sdkp,
-				  "Max LBA %zu (capacity %zu)\n",
-				  (sector_t) lba + 1, sdkp->capacity);
+			if (sdkp->first_scan)
+				sd_printk(KERN_WARNING, sdkp,
+					  "Changing capacity from %zu to Max LBA+1 %zu\n",
+					  sdkp->capacity, (sector_t) lba + 1);
 			sdkp->capacity = lba + 1;
 		}
 	}
