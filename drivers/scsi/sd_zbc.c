@@ -460,7 +460,7 @@ int sd_zbc_setup_read_write(struct scsi_disk *sdkp, struct request *rq,
 		goto out;
 	}
 
-	if (rq->cmd_flags & (REQ_WRITE | REQ_WRITE_SAME)) {
+	if (req_op(rq) == REQ_OP_WRITE || req_op(rq) == REQ_OP_WRITE_SAME) {
 		if (zone->type != BLK_ZONE_TYPE_SEQWRITE_REQ)
 			goto out;
 		if (zone->state == BLK_ZONE_READONLY)
