@@ -193,6 +193,55 @@ sector_t zbc_parse_zones(struct scsi_disk *sdkp, u64 zlen, unsigned char *buf,
 	return next_sector;
 }
 
+/**
+ * sd_zbc_report_zones - Issue a REPORT ZONES scsi command
+ * @sdkp: SCSI disk to which the command should be send
+ * @buffer: response buffer
+ * @bufflen: length of @buffer
+ * @start_sector: logical sector for the zone information should be reported
+ * @option: reporting option to be used
+ * @partial: flag to set the 'partial' bit for report zones command
+ */
+static int sd_zbc_report_zones(struct scsi_disk *sdkp, void *buffer,
+			       int bufflen, sector_t start_sector,
+			       enum zbc_zone_reporting_options option,
+			       bool partial)
+{
+	struct scsi_device *sdp = sdkp->device;
+	const int timeout = sdp->request_queue->rq_timeout
+			* SD_FLUSH_TIMEOUT_MULTIPLIER;
+	struct scsi_sense_hdr sshdr;
+	sector_t start_lba = sectors_to_logical(sdkp->device, start_sector);
+	unsigned char cmd[16];
+	int result;
+
+	if (!scsi_device_online(sdp))
+		return -ENODEV;
+
+	sd_zbc_debug(sdkp, "REPORT ZONES lba %zu len %d\n", start_lba, bufflen);
+
+	memset(cmd, 0, 16);
+	cmd[0] = ZBC_IN;
+	cmd[1] = ZI_REPORT_ZONES;
+	put_unaligned_be64(start_lba, &cmd[2]);
+	put_unaligned_be32(bufflen, &cmd[10]);
+	cmd[14] = (partial ? ZBC_REPORT_ZONE_PARTIAL : 0) | option;
+	memset(buffer, 0, bufflen);
+
+	result = scsi_execute_req(sdp, cmd, DMA_FROM_DEVICE,
+				buffer, bufflen, &sshdr,
+				timeout, SD_MAX_RETRIES, NULL);
+
+	if (result) {
+		sd_zbc_debug(sdkp,
+			     "REPORT ZONES lba %zu failed with %d/%d\n",
+			     start_lba, host_byte(result), driver_byte(result));
+		return -EIO;
+	}
+
+	return 0;
+}
+
 static void sd_zbc_refresh_zone_work(struct work_struct *work)
 {
 	struct zbc_update_work *zbc_work =
@@ -369,54 +418,6 @@ retry:
 			     "zone update already queued?\n");
 		kfree(zbc_work);
 	}
-}
-
-/**
- * sd_zbc_report_zones - Issue a REPORT ZONES scsi command
- * @sdkp: SCSI disk to which the command should be send
- * @buffer: response buffer
- * @bufflen: length of @buffer
- * @start_sector: logical sector for the zone information should be reported
- * @option: reporting option to be used
- * @partial: flag to set the 'partial' bit for report zones command
- */
-int sd_zbc_report_zones(struct scsi_disk *sdkp, unsigned char *buffer,
-			int bufflen, sector_t start_sector,
-			enum zbc_zone_reporting_options option, bool partial)
-{
-	struct scsi_device *sdp = sdkp->device;
-	const int timeout = sdp->request_queue->rq_timeout
-			* SD_FLUSH_TIMEOUT_MULTIPLIER;
-	struct scsi_sense_hdr sshdr;
-	sector_t start_lba = sectors_to_logical(sdkp->device, start_sector);
-	unsigned char cmd[16];
-	int result;
-
-	if (!scsi_device_online(sdp))
-		return -ENODEV;
-
-	sd_zbc_debug(sdkp, "REPORT ZONES lba %zu len %d\n", start_lba, bufflen);
-
-	memset(cmd, 0, 16);
-	cmd[0] = ZBC_IN;
-	cmd[1] = ZI_REPORT_ZONES;
-	put_unaligned_be64(start_lba, &cmd[2]);
-	put_unaligned_be32(bufflen, &cmd[10]);
-	cmd[14] = (partial ? ZBC_REPORT_ZONE_PARTIAL : 0) | option;
-	memset(buffer, 0, bufflen);
-
-	result = scsi_execute_req(sdp, cmd, DMA_FROM_DEVICE,
-				buffer, bufflen, &sshdr,
-				timeout, SD_MAX_RETRIES, NULL);
-
-	if (result) {
-		sd_zbc_debug(sdkp,
-			     "REPORT ZONES lba %zu failed with %d/%d\n",
-			     start_lba, host_byte(result), driver_byte(result));
-		return -EIO;
-	}
-
-	return 0;
 }
 
 /**
@@ -1232,10 +1233,10 @@ void sd_zbc_uninit_command(struct scsi_cmnd *cmd)
 }
 
 /**
- * sd_zbc_setup - Load zones of matching zlen size into rb tree.
+ * sd_zbc_init - Load zones of matching zlen size into rb tree.
  *
  */
-int sd_zbc_setup(struct scsi_disk *sdkp, u64 zlen, char *buf, int buf_len)
+static int sd_zbc_init(struct scsi_disk *sdkp, u64 zlen, char *buf, int buf_len)
 {
 	sector_t capacity = logical_to_sectors(sdkp->device, sdkp->capacity);
 	sector_t last_sector;
@@ -1270,6 +1271,75 @@ int sd_zbc_setup(struct scsi_disk *sdkp, u64 zlen, char *buf, int buf_len)
 		clear_bit(SD_ZBC_ZONE_INIT, &sdkp->zone_flags);
 
 	return 0;
+}
+
+/**
+ * sd_zbc_config() - Configure a ZBC device (on attach)
+ * @sdkp: SCSI disk being attached.
+ * @buffer: Buffer to working data.
+ * @buf_sz: Size of buffer to use for working data
+ *
+ * Return: true of SD_ZBC_RESET_WP provisioning is supported
+ */
+bool sd_zbc_config(struct scsi_disk *sdkp, void *buffer, size_t buf_sz)
+{
+	struct bdev_zone_report *bzrpt = buffer;
+	u64 zone_len, lba;
+	int retval;
+	u32 rep_len;
+	u8 same;
+
+	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC)
+		/*
+		 * Device managed or normal SCSI disk,
+		 * no special handling required
+		 */
+		return false;
+
+	retval = sd_zbc_report_zones(sdkp, bzrpt, buf_sz,
+				     0, ZBC_ZONE_REPORTING_OPTION_ALL, false);
+	if (retval < 0)
+		return false;
+
+	rep_len = be32_to_cpu(bzrpt->descriptor_count);
+	if (rep_len < 7) {
+		sd_printk(KERN_WARNING, sdkp,
+			  "REPORT ZONES report invalid length %u\n",
+			  rep_len);
+		return false;
+	}
+
+	if (sdkp->rc_basis == 0) {
+		/* The max_lba field is the capacity of a zoned device */
+		lba = be64_to_cpu(bzrpt->maximum_lba);
+		if (lba + 1 > sdkp->capacity) {
+			if (sdkp->first_scan)
+				sd_printk(KERN_WARNING, sdkp,
+					  "Changing capacity from %zu to Max LBA+1 %zu\n",
+					  sdkp->capacity, (sector_t) lba + 1);
+			sdkp->capacity = lba + 1;
+		}
+	}
+
+	/*
+	 * Adjust 'chunk_sectors' to the zone length if the device
+	 * supports equal zone sizes.
+	 */
+	same = bzrpt->same_field & 0x0f;
+	if (same > 3) {
+		sd_printk(KERN_WARNING, sdkp,
+			  "REPORT ZONES SAME type %d not supported\n", same);
+		return false;
+	}
+	/* Read the zone length from the first zone descriptor */
+	zone_len = be64_to_cpu(bzrpt->descriptors[0].length);
+	sdkp->unmap_alignment = zone_len;
+	sdkp->unmap_granularity = zone_len;
+	blk_queue_chunk_sectors(sdkp->disk->queue,
+				logical_to_sectors(sdkp->device, zone_len));
+
+	sd_zbc_init(sdkp, zone_len, buffer, buf_sz);
+	return true;
 }
 
 /**

@@ -289,10 +289,6 @@ static inline void sd_dif_complete(struct scsi_cmnd *cmd, unsigned int a)
 #define SD_ZBC_WRITE_ERR	2
 
 #ifdef CONFIG_SCSI_ZBC
-
-extern int sd_zbc_report_zones(struct scsi_disk *, unsigned char *, int,
-			       sector_t, enum zbc_zone_reporting_options, bool);
-extern int sd_zbc_setup(struct scsi_disk *, u64 zlen, char *buf, int buf_len);
 extern int sd_zbc_setup_zone_report_cmnd(struct scsi_cmnd *cmd, u8 rpt_opt);
 extern int sd_zbc_setup_zone_action(struct scsi_cmnd *cmd);
 extern int sd_zbc_setup_discard(struct scsi_cmnd *cmd);
@@ -303,23 +299,15 @@ extern void sd_zbc_uninit_command(struct scsi_cmnd *cmd);
 extern void sd_zbc_remove(struct scsi_disk *);
 extern void sd_zbc_reset_zones(struct scsi_disk *);
 extern void sd_zbc_update_zones(struct scsi_disk *, sector_t, int, int reason);
+extern bool sd_zbc_config(struct scsi_disk *, void *, size_t);
+
 extern unsigned int sd_zbc_discard_granularity(struct scsi_disk *sdkp);
 
 #else /* CONFIG_SCSI_ZBC */
 
-static inline int sd_zbc_report_zones(struct scsi_disk *sdkp,
-				      unsigned char *buf, int buf_len,
-				      sector_t start_sector,
-				      enum zbc_zone_reporting_options option,
-				      bool partial)
+static inline bool sd_zbc_config(struct scsi_disk *sdkp, void *b, size_t sz)
 {
-	return -EOPNOTSUPP;
-}
-
-static inline int sd_zbc_setup(struct scsi_disk *sdkp, u64 zlen,
-			       unsigned char *buf, int buf_len)
-{
-	return 0;
+	return false;
 }
 
 static inline void sd_zbc_done(struct scsi_cmnd *cmd, int good_bytes) {}

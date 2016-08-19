@@ -2244,68 +2244,6 @@ static int sd_read_protection_type(struct scsi_disk *sdkp, unsigned char *buffer
 	return ret;
 }
 
-static void sd_read_zones(struct scsi_disk *sdkp, unsigned char *buffer)
-{
-	int retval;
-	unsigned char *desc;
-	u32 rep_len;
-	u8 same;
-	u64 zone_len, lba;
-
-	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC)
-		/*
-		 * Device managed or normal SCSI disk,
-		 * no special handling required
-		 */
-		return;
-
-	retval = sd_zbc_report_zones(sdkp, buffer, SD_BUF_SIZE,
-				     0, ZBC_ZONE_REPORTING_OPTION_ALL, false);
-	if (retval < 0)
-		return;
-
-	rep_len = get_unaligned_be32(&buffer[0]);
-	if (rep_len < 64) {
-		sd_printk(KERN_WARNING, sdkp,
-			  "REPORT ZONES report invalid length %u\n",
-			  rep_len);
-		return;
-	}
-
-	if (sdkp->rc_basis == 0) {
-		/* The max_lba field is the capacity of a zoned device */
-		lba = get_unaligned_be64(&buffer[8]);
-		if (lba + 1 > sdkp->capacity) {
-			if (sdkp->first_scan)
-				sd_printk(KERN_WARNING, sdkp,
-					  "Changing capacity from %zu to Max LBA+1 %zu\n",
-					  sdkp->capacity, (sector_t) lba + 1);
-			sdkp->capacity = lba + 1;
-		}
-	}
-
-	/*
-	 * Adjust 'chunk_sectors' to the zone length if the device
-	 * supports equal zone sizes.
-	 */
-	same = buffer[4] & 0xf;
-	if (same > 3) {
-		sd_printk(KERN_WARNING, sdkp,
-			  "REPORT ZONES SAME type %d not supported\n", same);
-		return;
-	}
-	/* Read the zone length from the first zone descriptor */
-	desc = &buffer[64];
-	zone_len = get_unaligned_be64(&desc[8]);
-	sdkp->unmap_alignment = zone_len;
-	sdkp->unmap_granularity = zone_len;
-	blk_queue_chunk_sectors(sdkp->disk->queue,
-				logical_to_sectors(sdkp->device, zone_len));
-
-	sd_zbc_setup(sdkp, zone_len, buffer, SD_BUF_SIZE);
-	sd_config_discard(sdkp, SD_ZBC_RESET_WP);
-}
-
 static void read_capacity_error(struct scsi_disk *sdkp, struct scsi_device *sdp,
 			struct scsi_sense_hdr *sshdr, int sense_valid,
 			int the_result)
@@ -2611,7 +2549,8 @@ got_data:
 				      sdkp->physical_block_size);
 	sdkp->device->sector_size = sector_size;
 
-	sd_read_zones(sdkp, buffer);
+	if (sd_zbc_config(sdkp, buffer, SD_BUF_SIZE))
+		sd_config_discard(sdkp, SD_ZBC_RESET_WP);
 
 	{
 		char cap_str_2[10], cap_str_10[10];
