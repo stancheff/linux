@@ -115,6 +115,7 @@ enum bdev_zone_same {
  * @zone_locator_lba: starting lba for first [reported] zone
  * @return_page_count: number of *bytes* allocated for result
  * @report_option: see: zone_report_option enum
+ * @force_unit_access: Force report from media
  *
  * Used to issue report zones command to connected device
  */
@@ -122,6 +123,25 @@ struct bdev_zone_get_report {
 	__u64 zone_locator_lba;
 	__u32 return_page_count;
 	__u8  report_option;
+	__u8  force_unit_access;
+} __packed;
+
+/**
+ * struct bdev_zone_action - ioctl: Perform Zone Action
+ *
+ * @zone_locator_lba: starting lba for first [reported] zone
+ * @return_page_count: number of *bytes* allocated for result
+ * @action: One of the ZONE_ACTION_*'s Close,Finish,Open, or Reset
+ * @all_zones: Flag to indicate if command should apply to all zones.
+ * @force_unit_access: Force command to media and update zone cache on success
+ *
+ * Used to issue report zones command to connected device
+ */
+struct bdev_zone_action {
+	__u64 zone_locator_lba;
+	__u32 action;
+	__u8  all_zones;
+	__u8  force_unit_access;
 } __packed;
 
 /**
@@ -134,7 +154,6 @@ struct bdev_zone_get_report {
  * @lba_start: lba where the zone starts.
  * @lba_wptr: lba of the current write pointer.
  * @reserved: padding
- *
  */
 struct bdev_zone_descriptor {
 	__u8 type;
@@ -178,5 +197,14 @@ struct bdev_zone_report_io {
 		struct bdev_zone_report out;
 	} data;
 } __packed;
+
+/* continuing from uapi/linux/fs.h: */
+#define BLKREPORT	_IOWR(0x12, 130, struct bdev_zone_report_io)
+#define BLKZONEACTION	_IOW(0x12, 131, struct bdev_zone_action)
+
+#define ZONE_ACTION_CLOSE	0x01
+#define ZONE_ACTION_FINISH	0x02
+#define ZONE_ACTION_OPEN	0x03
+#define ZONE_ACTION_RESET	0x04
 
 #endif /* _UAPI_BLKZONED_API_H */
