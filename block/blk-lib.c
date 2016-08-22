@@ -307,22 +307,6 @@ int blkdev_issue_zone_report(struct block_device *bdev, unsigned int op_flags,
 	bio_set_op_attrs(bio, REQ_OP_ZONE_REPORT, op_flags);
 	ret = submit_bio_wait(bio);
 
-	/*
-	 * When our request it nak'd the underlying device maybe conventional
-	 * so ... report a single conventional zone the size of the device.
-	 */
-	if (ret == -EIO && conv->descriptor_count) {
-		/* Adjust the conventional to the size of the partition ... */
-		__be64 blksz = cpu_to_be64(bdev->bd_part->nr_sects);
-
-		conv->maximum_lba = blksz;
-		conv->descriptors[0].type = BLK_ZONE_TYPE_CONVENTIONAL;
-		conv->descriptors[0].flags = BLK_ZONE_NO_WP << 4;
-		conv->descriptors[0].length = blksz;
-		conv->descriptors[0].lba_start = 0;
-		conv->descriptors[0].lba_wptr = blksz;
-		ret = 0;
-	}
 	bio_put(bio);
 	return ret;
 }

@@ -1181,9 +1181,10 @@ static int sd_setup_zone_report_cmnd(struct scsi_cmnd *cmd)
 	struct scsi_disk *sdkp = scsi_disk(rq->rq_disk);
 	struct bio *bio = rq->bio;
 	sector_t sector = blk_rq_pos(rq);
-	struct gendisk *disk = rq->rq_disk;
 	unsigned int nr_bytes = blk_rq_bytes(rq);
 	int ret = BLKPREP_KILL;
+	bool is_fua = (rq->cmd_flags & REQ_META) ? true : false;
+	u8 rpt_opt = ZBC_ZONE_REPORTING_OPTION_ALL;
 
 	WARN_ON(nr_bytes == 0);
 
@@ -1194,17 +1195,34 @@ static int sd_setup_zone_report_cmnd(struct scsi_cmnd *cmd)
 	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC) {
 		void *src;
 		struct bdev_zone_report *conv;
+		__be64 blksz = cpu_to_be64(sdkp->capacity);
 
-		if (nr_bytes < sizeof(struct bdev_zone_report))
+		if (nr_bytes < 512)
 			goto out;
 
 		src = kmap_atomic(bio->bi_io_vec->bv_page);
 		conv = src + bio->bi_io_vec->bv_offset;
 		conv->descriptor_count = cpu_to_be32(1);
 		conv->same_field = BLK_ZONE_SAME_ALL;
-		conv->maximum_lba = cpu_to_be64(disk->part0.nr_sects);
+		conv->maximum_lba = blksz;
+		conv->descriptors[0].type = BLK_ZONE_TYPE_CONVENTIONAL;
+		conv->descriptors[0].flags = BLK_ZONE_NO_WP << 4;
+		conv->descriptors[0].length = blksz;
+		conv->descriptors[0].lba_start = 0;
+		conv->descriptors[0].lba_wptr = blksz;
 		kunmap_atomic(src);
+		ret = BLKPREP_DONE;
 		goto out;
+	}
+	/* FUTURE ... when streamid is available */
+	/* rpt_opt = bio_get_streamid(bio); */
+
+	if (!is_fua) {
+		ret = sd_zbc_setup_zone_report_cmnd(cmd, rpt_opt);
+		if (ret == BLKPREP_DONE || ret == BLKPREP_DEFER)
+			goto out;
+		if (ret == BLKPREP_KILL)
+			pr_err("No Zone Cache, query media.\n");
 	}
 
 	ret = scsi_init_io(cmd);
@@ -1224,8 +1242,7 @@ static int sd_setup_zone_report_cmnd(struct scsi_cmnd *cmd)
 	cmd->cmnd[1] = ZI_REPORT_ZONES;
 	put_unaligned_be64(sector, &cmd->cmnd[2]);
 	put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
-	/* FUTURE ... when streamid is available */
-	/* cmd->cmnd[14] = bio_get_streamid(bio); */
+	cmd->cmnd[14] = rpt_opt;
 
 	cmd->sc_data_direction = DMA_FROM_DEVICE;
 	cmd->sdb.length = nr_bytes;
@@ -1243,10 +1260,21 @@ static int sd_setup_zone_action_cmnd(struct scsi_cmnd *cmd)
 	struct scsi_disk *sdkp = scsi_disk(rq->rq_disk);
 	sector_t sector = blk_rq_pos(rq);
 	int ret = BLKPREP_KILL;
+	bool is_fua = (rq->cmd_flags & REQ_META) ? true : false;
 	u8 allbit = 0;
 
 	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC)
 		goto out;
+
+	rq->timeout = SD_TIMEOUT;
+	rq->completion_data = NULL;
+
+	/* Allow the ZBC zone cache an opportunity to hijack the request */
+	if (!is_fua) {
+		ret = sd_zbc_setup_zone_action(cmd);
+		if (ret == BLKPREP_OK || ret == BLKPREP_DEFER)
+			goto out;
+	}
 
 	if (sector == ~0ul) {
 		allbit = 1;
@@ -1315,6 +1343,8 @@ static int sd_init_command(struct scsi_cmnd *cmd)
 static void sd_uninit_command(struct scsi_cmnd *SCpnt)
 {
 	struct request *rq = SCpnt->request;
+
+	sd_zbc_uninit_command(SCpnt);
 
 	if (req_op(rq) == REQ_OP_DISCARD &&
 	    rq->completion_data)
@@ -2043,6 +2073,8 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 
 	if (rq_data_dir(SCpnt->request) == READ && scsi_prot_sg_count(SCpnt))
 		sd_dif_complete(SCpnt, good_bytes);
+
+	sd_zbc_done(SCpnt, good_bytes);
 
 	return good_bytes;
 }

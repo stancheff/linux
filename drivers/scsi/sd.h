@@ -293,11 +293,15 @@ static inline void sd_dif_complete(struct scsi_cmnd *cmd, unsigned int a)
 extern int sd_zbc_report_zones(struct scsi_disk *, unsigned char *, int,
 			       sector_t, enum zbc_zone_reporting_options, bool);
 extern int sd_zbc_setup(struct scsi_disk *, u64 zlen, char *buf, int buf_len);
-extern void sd_zbc_remove(struct scsi_disk *);
-extern void sd_zbc_reset_zones(struct scsi_disk *);
+extern int sd_zbc_setup_zone_report_cmnd(struct scsi_cmnd *cmd, u8 rpt_opt);
+extern int sd_zbc_setup_zone_action(struct scsi_cmnd *cmd);
 extern int sd_zbc_setup_discard(struct scsi_cmnd *cmd);
 extern int sd_zbc_setup_read_write(struct scsi_disk *, struct request *,
 				   sector_t, unsigned int *);
+extern void sd_zbc_done(struct scsi_cmnd *cmd, int good_bytes);
+extern void sd_zbc_uninit_command(struct scsi_cmnd *cmd);
+extern void sd_zbc_remove(struct scsi_disk *);
+extern void sd_zbc_reset_zones(struct scsi_disk *);
 extern void sd_zbc_update_zones(struct scsi_disk *, sector_t, int, int reason);
 extern unsigned int sd_zbc_discard_granularity(struct scsi_disk *sdkp);
 
@@ -318,7 +322,19 @@ static inline int sd_zbc_setup(struct scsi_disk *sdkp, u64 zlen,
 	return 0;
 }
 
-static inline int int sd_zbc_setup_discard(struct scsi_cmnd *cmd)
+static inline void sd_zbc_done(struct scsi_cmnd *cmd, int good_bytes) {}
+
+extern int sd_zbc_setup_zone_report_cmnd(struct scsi_cmnd *cmd, u8 rpt_opt)
+{
+	return BLKPREP_KILL;
+}
+
+static inline sd_zbc_setup_zone_action(struct scsi_cmnd *cmd)
+{
+	return BLKPREP_KILL;
+}
+
+static inline int sd_zbc_setup_discard(struct scsi_cmnd *cmd)
 {
 	return BLKPREP_KILL;
 }
