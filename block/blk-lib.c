@@ -316,8 +316,8 @@ int blkdev_issue_zone_report(struct block_device *bdev, unsigned int op_flags,
 		__be64 blksz = cpu_to_be64(bdev->bd_part->nr_sects);
 
 		conv->maximum_lba = blksz;
-		conv->descriptors[0].type = ZTYP_CONVENTIONAL;
-		conv->descriptors[0].flags = ZCOND_CONVENTIONAL << 4;
+		conv->descriptors[0].type = BLK_ZONE_TYPE_CONVENTIONAL;
+		conv->descriptors[0].flags = BLK_ZONE_NO_WP << 4;
 		conv->descriptors[0].length = blksz;
 		conv->descriptors[0].lba_start = 0;
 		conv->descriptors[0].lba_wptr = blksz;

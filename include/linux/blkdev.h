@@ -263,26 +263,6 @@ struct blk_queue_tag {
 #define BLK_SCSI_CMD_PER_LONG	(BLK_SCSI_MAX_CMDS / (sizeof(long) * 8))
 
 #ifdef CONFIG_BLK_DEV_ZONED
-enum blk_zone_type {
-	BLK_ZONE_TYPE_UNKNOWN,
-	BLK_ZONE_TYPE_CONVENTIONAL,
-	BLK_ZONE_TYPE_SEQWRITE_REQ,
-	BLK_ZONE_TYPE_SEQWRITE_PREF,
-	BLK_ZONE_TYPE_RESERVED,
-};
-
-enum blk_zone_state {
-	BLK_ZONE_NO_WP,
-	BLK_ZONE_EMPTY,
-	BLK_ZONE_OPEN,
-	BLK_ZONE_OPEN_EXPLICIT,
-	BLK_ZONE_CLOSED,
-	BLK_ZONE_UNKNOWN = 5,
-	BLK_ZONE_READONLY = 0xd,
-	BLK_ZONE_FULL,
-	BLK_ZONE_OFFLINE,
-	BLK_ZONE_BUSY = 0x20,
-};
 
 struct blk_zone {
 	struct rb_node node;

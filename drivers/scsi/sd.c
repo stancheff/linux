@@ -1201,7 +1201,7 @@ static int sd_setup_zone_report_cmnd(struct scsi_cmnd *cmd)
 		src = kmap_atomic(bio->bi_io_vec->bv_page);
 		conv = src + bio->bi_io_vec->bv_offset;
 		conv->descriptor_count = cpu_to_be32(1);
-		conv->same_field = ZS_ALL_SAME;
+		conv->same_field = BLK_ZONE_SAME_ALL;
 		conv->maximum_lba = cpu_to_be64(disk->part0.nr_sects);
 		kunmap_atomic(src);
 		goto out;
