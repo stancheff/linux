@@ -299,13 +299,13 @@ extern void sd_zbc_uninit_command(struct scsi_cmnd *cmd);
 extern void sd_zbc_remove(struct scsi_disk *);
 extern void sd_zbc_reset_zones(struct scsi_disk *);
 extern void sd_zbc_update_zones(struct scsi_disk *, sector_t, int, int reason);
-extern bool sd_zbc_config(struct scsi_disk *, void *, size_t);
+extern bool sd_zbc_config(struct scsi_disk *, gfp_t);
 
 extern unsigned int sd_zbc_discard_granularity(struct scsi_disk *sdkp);
 
 #else /* CONFIG_SCSI_ZBC */
 
-static inline bool sd_zbc_config(struct scsi_disk *sdkp, void *b, size_t sz)
+static inline bool sd_zbc_config(struct scsi_disk *sdkp, gfp_t gfp)
 {
 	return false;
 }

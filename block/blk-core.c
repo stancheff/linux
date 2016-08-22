@@ -727,7 +727,7 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 	INIT_LIST_HEAD(&q->blkg_list);
 #endif
 #ifdef CONFIG_BLK_DEV_ZONED
-	q->zones = RB_ROOT;
+	q->zones = NULL;
 #endif
 	INIT_DELAYED_WORK(&q->delay_work, blk_delay_work);
 

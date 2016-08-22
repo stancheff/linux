@@ -232,36 +232,7 @@ static ssize_t queue_max_hw_sectors_show(struct request_queue *q, char *page)
 #ifdef CONFIG_BLK_DEV_ZONED
 static ssize_t queue_zoned_show(struct request_queue *q, char *page)
 {
-	struct rb_node *node;
-	struct blk_zone *zone;
-	ssize_t offset = 0, end = 0;
-	size_t size = 0, num = 0;
-	enum blk_zone_type type = BLK_ZONE_TYPE_UNKNOWN;
-
-	for (node = rb_first(&q->zones); node; node = rb_next(node)) {
-		zone = rb_entry(node, struct blk_zone, node);
-		if (zone->type != type ||
-		    zone->len != size ||
-		    end != zone->start) {
-			if (size != 0)
-				offset += sprintf(page + offset, "%zu\n", num);
-			/* We can only store one page ... */
-			if (offset + 42 > PAGE_SIZE) {
-				offset += sprintf(page + offset, "...\n");
-				return offset;
-			}
-			size = zone->len;
-			type = zone->type;
-			offset += sprintf(page + offset, "%zu %zu %d ",
-					  zone->start, size, type);
-			num = 0;
-			end = zone->start + size;
-		} else
-			end += zone->len;
-		num++;
-	}
-	offset += sprintf(page + offset, "%zu\n", num);
-	return offset;
+	return sprintf(page, "%u\n", q->zones ? 1 : 0);
 }
 #endif
 

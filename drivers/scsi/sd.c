@@ -2549,8 +2549,9 @@ got_data:
 				      sdkp->physical_block_size);
 	sdkp->device->sector_size = sector_size;
 
-	if (sd_zbc_config(sdkp, buffer, SD_BUF_SIZE))
-		sd_config_discard(sdkp, SD_ZBC_RESET_WP);
+	if (sdkp->first_scan)
+		if (sd_zbc_config(sdkp, GFP_KERNEL))
+			sd_config_discard(sdkp, SD_ZBC_RESET_WP);
 
 	{
 		char cap_str_2[10], cap_str_10[10];

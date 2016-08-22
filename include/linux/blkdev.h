@@ -264,27 +264,83 @@ struct blk_queue_tag {
 
 #ifdef CONFIG_BLK_DEV_ZONED
 
+/**
+ * struct blk_zone - A single zone type/stats and WP offset.
+ *
+ * @wp:    Holds the wp offset from the start of the zone.
+ * @type:  Holds the zone type nibble.
+ * @state: Holds the zone state nibble + kernel (zone busy)
+ * @private_data: Used to hold whatever the implicit domain owner
+ *                of the zone needs to track.
+ *
+ * Type is left at 4 bits (only 2 are needed currently) to match
+ * the current ZBC/ZAC standards.
+ *
+ * State is using 5 bits to accommodate the ZONE_BUSY. The first 4 bits
+ * match the current ZBC/ZAC spec.
+ * ZONE_BUSY could be mapped to one of the reserved bits. Using it as
+ * mask bit or independent flag my be useful for decoding the zone
+ * state before it transitioned to BUSY.
+ *
+ * A zone sized at order (39+9) is very unlikely (current zones are 16+9)
+ * Even at lba48 equivalent number of sectors we have a large amount
+ * of padding to fill out 8 bytes.
+ *
+ * Getting this to fit in 4 bytes would limit the maximum size of a zone
+ * to 4G [order 23 of 512 byte sectors + 9 bits for flags] which is probably
+ * okay for embedded or 32-bit systems where the private_data pointer
+ * would also shrink to 32 bits. There are also WP tracking schemes
+ * that don't make use of the private_data helper so perhaps that
+ * could be factored out as well.
+ */
 struct blk_zone {
-	struct rb_node node;
-	spinlock_t lock;
-	sector_t start;
-	size_t len;
-	sector_t wp;
-	enum blk_zone_type type;
-	enum blk_zone_state state;
+	unsigned long long wp:39;
+	unsigned long long type:4;
+	unsigned long long state:5;
+	unsigned long long padding:15;
 	void *private_data;
+};
+
+/**
+ * struct contiguous_wps - A descriptor of zones of the same size
+ *
+ * @start_lba:  LBA of first zone covered by the descriptor.
+ * @last_lba:   LBA of last zone.
+ * @zone_size:  Size of zones as a number of 512 byte sectors.
+ * @zone_count: Number of zones (last-start/size) for convenience.
+ * @lock:       A spinlock protecting these zones.
+ * @is_zoned:   0 when all zones are conventional no WP zones.
+ * zones:       Array of blk_zone entries.
+ */
+struct contiguous_wps {
+	u64 start_lba;
+	u64 last_lba;
+	u64 zone_size;
+	u32 zone_count;
+	spinlock_t lock;
+	unsigned is_zoned:1;
+	struct blk_zone zones[0];
+};
+
+/**
+ * struct zone_wps - A collection of zone descriptors to describe zoned media.
+ *
+ * @wps_count:  Number of descriptors.
+ * @wps:        Array of zone descriptors.
+ */
+struct zone_wps {
+	u32 wps_count;
+	struct contiguous_wps **wps;
 };
 
 #define blk_zone_is_seq_req(z) ((z)->type == BLK_ZONE_TYPE_SEQWRITE_REQ)
 #define blk_zone_is_seq_pref(z) ((z)->type == BLK_ZONE_TYPE_SEQWRITE_PREF)
 #define blk_zone_is_smr(z) (blk_zone_is_seq_req(z) || blk_zone_is_seq_pref(z))
 #define blk_zone_is_cmr(z) ((z)->type == BLK_ZONE_TYPE_CONVENTIONAL)
-#define blk_zone_is_full(z) ((z)->wp == (z)->start + (z)->len)
-#define blk_zone_is_empty(z) ((z)->wp == (z)->start)
+#define blk_zone_is_empty(z) ((z)->wp == 0)
 
-extern struct blk_zone *blk_lookup_zone(struct request_queue *, sector_t);
-extern struct blk_zone *blk_insert_zone(struct request_queue *,
-					struct blk_zone *);
+extern struct blk_zone *blk_lookup_zone(struct request_queue *, sector_t,
+					sector_t *, sector_t *, spinlock_t **);
 extern void blk_drop_zones(struct request_queue *);
 #else
 static inline void blk_drop_zones(struct request_queue *q) { };
@@ -463,7 +519,7 @@ struct request_queue {
 	struct queue_limits	limits;
 
 #ifdef CONFIG_BLK_DEV_ZONED
-	struct rb_root		zones;
+	struct zone_wps		*zones;
 #endif
 	/*
 	 * sg stuff
