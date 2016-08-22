@@ -693,8 +693,13 @@ static void sd_config_discard(struct scsi_disk *sdkp, unsigned int mode)
 		break;
 
 	case SD_ZBC_RESET_WP:
-		max_blocks = sdkp->unmap_granularity;
 		q->limits.discard_zeroes_data = 1;
+		q->limits.discard_granularity =
+			sd_zbc_discard_granularity(sdkp);
+
+		max_blocks = min_not_zero(sdkp->unmap_granularity,
+					  q->limits.discard_granularity >>
+						ilog2(logical_block_size));
 		break;
 
 	case SD_LBP_ZERO:
@@ -1955,13 +1960,12 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 			good_bytes = blk_rq_bytes(req);
 			scsi_set_resid(SCpnt, 0);
 		} else {
-#ifdef CONFIG_SCSI_ZBC
 			if (op == ZBC_OUT)
 				/* RESET WRITE POINTER failed */
 				sd_zbc_update_zones(sdkp,
 						    blk_rq_pos(req),
-						    512, true);
-#endif
+						    512, SD_ZBC_RESET_WP_ERR);
+
 			good_bytes = 0;
 			scsi_set_resid(SCpnt, blk_rq_bytes(req));
 		}
@@ -2034,7 +2038,6 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 				good_bytes = blk_rq_bytes(req);
 				scsi_set_resid(SCpnt, 0);
 			}
-#ifdef CONFIG_SCSI_ZBC
 			/*
 			 * ZBC: Unaligned write command.
 			 * Write did not start a write pointer position.
@@ -2042,8 +2045,7 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 			if (sshdr.ascq == 0x04)
 				sd_zbc_update_zones(sdkp,
 						    blk_rq_pos(req),
-						    512, true);
-#endif
+						    512, SD_ZBC_WRITE_ERR);
 		}
 		break;
 	default:
@@ -2270,7 +2272,7 @@ static void sd_read_zones(struct scsi_disk *sdkp, unsigned char *buffer)
 	 * supports equal zone sizes.
 	 */
 	same = buffer[4] & 0xf;
-	if (same == 0 || same > 3) {
+	if (same > 3) {
 		sd_printk(KERN_WARNING, sdkp,
 			  "REPORT ZONES SAME type %d not supported\n", same);
 		return;
@@ -2282,9 +2284,9 @@ static void sd_read_zones(struct scsi_disk *sdkp, unsigned char *buffer)
 	sdkp->unmap_granularity = zone_len;
 	blk_queue_chunk_sectors(sdkp->disk->queue,
 				logical_to_sectors(sdkp->device, zone_len));
-	sd_config_discard(sdkp, SD_ZBC_RESET_WP);
 
-	sd_zbc_setup(sdkp, buffer, SD_BUF_SIZE);
+	sd_zbc_setup(sdkp, zone_len, buffer, SD_BUF_SIZE);
+	sd_config_discard(sdkp, SD_ZBC_RESET_WP);
 }
 
 static void read_capacity_error(struct scsi_disk *sdkp, struct scsi_device *sdp,
