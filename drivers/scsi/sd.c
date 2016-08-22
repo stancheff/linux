@@ -729,21 +729,19 @@ static int sd_setup_discard_cmnd(struct scsi_cmnd *cmd)
 	sector_t sector = blk_rq_pos(rq);
 	unsigned int nr_sectors = blk_rq_sectors(rq);
 	unsigned int nr_bytes = blk_rq_bytes(rq);
-	unsigned int len;
-	int ret = 0;
+	int ret;
 	char *buf;
-	struct page *page = NULL;
+	struct page *page;
 
 	sector >>= ilog2(sdp->sector_size) - 9;
 	nr_sectors >>= ilog2(sdp->sector_size) - 9;
 
-	if (sdkp->provisioning_mode != SD_ZBC_RESET_WP) {
-		page = alloc_page(GFP_ATOMIC | __GFP_ZERO);
-		if (!page)
-			return BLKPREP_DEFER;
-	}
+	page = alloc_page(GFP_ATOMIC | __GFP_ZERO);
+	if (!page)
+		return BLKPREP_DEFER;
 
 	rq->completion_data = page;
+	rq->timeout = SD_TIMEOUT;
 
 	switch (sdkp->provisioning_mode) {
 	case SD_LBP_UNMAP:
@@ -758,7 +756,7 @@ static int sd_setup_discard_cmnd(struct scsi_cmnd *cmd)
 		put_unaligned_be64(sector, &buf[8]);
 		put_unaligned_be32(nr_sectors, &buf[16]);
 
-		len = 24;
+		cmd->transfersize = 24;
 		break;
 
 	case SD_LBP_WS16:
@@ -768,7 +766,7 @@ static int sd_setup_discard_cmnd(struct scsi_cmnd *cmd)
 		put_unaligned_be64(sector, &cmd->cmnd[2]);
 		put_unaligned_be32(nr_sectors, &cmd->cmnd[10]);
 
-		len = sdkp->device->sector_size;
+		cmd->transfersize = sdp->sector_size;
 		break;
 
 	case SD_LBP_WS10:
@@ -777,35 +775,24 @@ static int sd_setup_discard_cmnd(struct scsi_cmnd *cmd)
 		cmd->cmnd[0] = WRITE_SAME;
 		if (sdkp->provisioning_mode == SD_LBP_WS10)
 			cmd->cmnd[1] = 0x8; /* UNMAP */
+		else
+			rq->timeout = SD_WRITE_SAME_TIMEOUT;
 		put_unaligned_be32(sector, &cmd->cmnd[2]);
 		put_unaligned_be16(nr_sectors, &cmd->cmnd[7]);
 
-		len = sdkp->device->sector_size;
+		cmd->transfersize = sdp->sector_size;
 		break;
 
 	case SD_ZBC_RESET_WP:
-		/* sd_zbc_setup_discard uses block layer sector units */
-		ret = sd_zbc_setup_discard(sdkp, rq, blk_rq_pos(rq),
-					   blk_rq_sectors(rq));
+		ret = sd_zbc_setup_discard(cmd);
 		if (ret != BLKPREP_OK)
 			goto out;
-		cmd->cmd_len = 16;
-		cmd->cmnd[0] = ZBC_OUT;
-		cmd->cmnd[1] = ZO_RESET_WRITE_POINTER;
-		put_unaligned_be64(sector, &cmd->cmnd[2]);
-		/* Reset Write Pointer doesn't have a payload */
-		len = 0;
-		cmd->sc_data_direction = DMA_NONE;
 		break;
-
 	default:
 		ret = BLKPREP_INVALID;
 		goto out;
 	}
 
-	rq->timeout = SD_TIMEOUT;
-
-	cmd->transfersize = len;
 	cmd->allowed = SD_MAX_RETRIES;
 
 	/*
@@ -816,17 +803,15 @@ static int sd_setup_discard_cmnd(struct scsi_cmnd *cmd)
 	 * discarded on disk. This allows us to report completion on the full
 	 * amount of blocks described by the request.
 	 */
-	if (len) {
-		blk_add_request_payload(rq, page, 0, len);
+	if (cmd->transfersize) {
+		blk_add_request_payload(rq, page, 0, cmd->transfersize);
 		ret = scsi_init_io(cmd);
 	}
 	rq->__data_len = nr_bytes;
 
 out:
-	if (page && ret != BLKPREP_OK) {
-		rq->completion_data = NULL;
+	if (ret != BLKPREP_OK)
 		__free_page(page);
-	}
 	return ret;
 }
 

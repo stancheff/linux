@@ -295,8 +295,7 @@ extern int sd_zbc_report_zones(struct scsi_disk *, unsigned char *, int,
 extern int sd_zbc_setup(struct scsi_disk *, u64 zlen, char *buf, int buf_len);
 extern void sd_zbc_remove(struct scsi_disk *);
 extern void sd_zbc_reset_zones(struct scsi_disk *);
-extern int sd_zbc_setup_discard(struct scsi_disk *, struct request *,
-				sector_t, unsigned int);
+extern int sd_zbc_setup_discard(struct scsi_cmnd *cmd);
 extern int sd_zbc_setup_read_write(struct scsi_disk *, struct request *,
 				   sector_t, unsigned int *);
 extern void sd_zbc_update_zones(struct scsi_disk *, sector_t, int, int reason);
@@ -319,11 +318,9 @@ static inline int sd_zbc_setup(struct scsi_disk *sdkp, u64 zlen,
 	return 0;
 }
 
-static inline int sd_zbc_setup_discard(struct scsi_disk *sdkp,
-				       struct request *rq, sector_t sector,
-				       unsigned int num_sectors)
+static inline int int sd_zbc_setup_discard(struct scsi_cmnd *cmd)
 {
-	return BLKPREP_OK;
+	return BLKPREP_KILL;
 }
 
 static inline int sd_zbc_setup_read_write(struct scsi_disk *sdkp,
