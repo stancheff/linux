@@ -261,6 +261,13 @@ struct blk_queue_tag {
 #define BLK_SCSI_MAX_CMDS	(256)
 #define BLK_SCSI_CMD_PER_LONG	(BLK_SCSI_MAX_CMDS / (sizeof(long) * 8))
 
+enum queue_limit_zoned_type {
+	ZONED_TYPE_NONE = 0,		/* Not a zoned device */
+	ZONED_TYPE_HA = 1,		/* Host Aware ZBC device */
+	ZONED_TYPE_HM = 2,		/* Host Managed ZBC device */
+	ZONED_TYPE_COMPOSITE = 3,	/* DM composite of HA and HM devices */
+};
+
 struct queue_limits {
 	unsigned long		bounce_pfn;
 	unsigned long		seg_boundary_mask;
@@ -290,6 +297,7 @@ struct queue_limits {
 	unsigned char		cluster;
 	unsigned char		discard_zeroes_data;
 	unsigned char		raid_partial_stripes_expensive;
+	unsigned		zoned:2;
 };
 
 struct request_queue {
@@ -1342,6 +1350,16 @@ static inline unsigned int queue_discard_zeroes_data(struct request_queue *q)
 static inline unsigned int bdev_discard_zeroes_data(struct block_device *bdev)
 {
 	return queue_discard_zeroes_data(bdev_get_queue(bdev));
+}
+
+static inline unsigned int queue_zoned(struct request_queue *q)
+{
+	return q->limits.zoned;
+}
+
+static inline unsigned int bdev_zoned(struct block_device *bdev)
+{
+	return queue_zoned(bdev_get_queue(bdev));
 }
 
 static inline unsigned int bdev_write_same(struct block_device *bdev)
