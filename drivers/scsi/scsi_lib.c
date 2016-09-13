@@ -745,6 +745,15 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes)
 			sense_deferred = scsi_sense_is_deferred(&sshdr);
 	}
 
+	if (req_op(req) == REQ_OP_READ &&
+	    sense_valid && !sense_deferred &&
+	    sshdr.sense_key == ILLEGAL_REQUEST &&
+	    cmd->device->urswrz == 0 &&
+	    is_read_past_wp(&sshdr)) {
+		cmd->result = result = 0;
+		return;
+	}
+
 	if (req->cmd_type == REQ_TYPE_BLOCK_PC) { /* SG_IO ioctl from block level */
 		if (result) {
 			if (sense_valid && req->sense) {

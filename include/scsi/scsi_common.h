@@ -58,6 +58,14 @@ static inline bool scsi_sense_valid(const struct scsi_sense_hdr *sshdr)
 	return (sshdr->response_code & 0x70) == 0x70;
 }
 
+static inline bool is_read_past_wp(struct scsi_sense_hdr *sshdr)
+{
+	/* attempt to read invalid data */
+	if (sshdr->asc == 0x21 && sshdr->ascq == 0x06)
+		return true;
+	return false;
+}
+
 extern bool scsi_normalize_sense(const u8 *sense_buffer, int sb_len,
 				 struct scsi_sense_hdr *sshdr);
 
