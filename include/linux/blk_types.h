@@ -232,13 +232,18 @@ enum rq_flag_bits {
 enum req_op {
 	REQ_OP_READ,
 	REQ_OP_WRITE,
+	REQ_OP_ZONE_REPORT,
+	REQ_OP_ZONE_OPEN,
+	REQ_OP_ZONE_CLOSE,
+	REQ_OP_ZONE_FINISH,
+	REQ_OP_ZONE_RESET,
 	REQ_OP_DISCARD,		/* request to discard sectors */
 	REQ_OP_SECURE_ERASE,	/* request to securely erase sectors */
 	REQ_OP_WRITE_SAME,	/* write same block many times */
 	REQ_OP_FLUSH,		/* request for cache flush */
 };
 
-#define REQ_OP_BITS 3
+#define REQ_OP_BITS 4
 
 typedef unsigned int blk_qc_t;
 #define BLK_QC_T_NONE	-1U
