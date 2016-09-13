@@ -1855,6 +1855,12 @@ static int sd_done(struct scsi_cmnd *SCpnt)
 				}
 			}
 		}
+		/* ATTEMPT TO READ INVALID DATA */
+		if (is_read_past_wp(&sshdr)) {
+			good_bytes = blk_rq_bytes(req);
+			scsi_set_resid(SCpnt, 0);
+			sd_printk(KERN_NOTICE, sdkp, "Read past WP\n");
+		}
 		break;
 	default:
 		break;
