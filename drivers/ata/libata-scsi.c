@@ -2355,20 +2355,19 @@ static unsigned int ata_scsiop_inq_b2(struct ata_scsi_args *args, u8 *rbuf)
 
 static unsigned int ata_scsiop_inq_b6(struct ata_scsi_args *args, u8 *rbuf)
 {
+	struct ata_device *dev = args->dev;
+
 	/*
 	 * zbc-r05 SCSI Zoned Block device characteristics VPD page
 	 */
 	rbuf[1] = 0xb6;
 	rbuf[3] = 0x3C;
 
-	/*
-	 * URSWRZ bit is only meaningful for host-managed ZAC drives
-	 */
-	if (args->dev->zac_zoned_cap & 1)
-		rbuf[4] |= 1;
-	put_unaligned_be32(args->dev->zac_zones_optimal_open, &rbuf[8]);
-	put_unaligned_be32(args->dev->zac_zones_optimal_nonseq, &rbuf[12]);
-	put_unaligned_be32(args->dev->zac_zones_max_open, &rbuf[16]);
+	/* URSWRZ bit */
+	rbuf[4] |= dev->zac_zoned_cap & 1;
+	put_unaligned_be32(dev->zac_zones_optimal_open, &rbuf[8]);
+	put_unaligned_be32(dev->zac_zones_optimal_nonseq, &rbuf[12]);
+	put_unaligned_be32(dev->zac_zones_max_open, &rbuf[16]);
 
 	return 0;
 }

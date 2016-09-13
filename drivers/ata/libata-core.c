@@ -2235,20 +2235,17 @@ static void ata_dev_config_zac(struct ata_device *dev)
 	u8 *identify_buf = ap->sector_buf;
 	int log_index = ATA_LOG_SATA_ID_DEV_DATA * 2, i, found = 0;
 	u16 log_pages;
+	bool is_hostaware = ata_id_zoned_cap(dev->id) == 0x01 ? true : false;
 
+	dev->zac_zoned_cap = 1;
 	dev->zac_zones_optimal_open = U32_MAX;
 	dev->zac_zones_optimal_nonseq = U32_MAX;
 	dev->zac_zones_max_open = U32_MAX;
 
 	/*
-	 * Always set the 'ZAC' flag for Host-managed devices.
+	 * Always set the 'ZAC' flag for Host-managed and Host-aware devices.
 	 */
-	if (dev->class == ATA_DEV_ZAC)
-		dev->flags |= ATA_DFLAG_ZAC;
-	else if (ata_id_zoned_cap(dev->id) == 0x01)
-		/*
-		 * Check for host-aware devices.
-		 */
+	if (dev->class == ATA_DEV_ZAC || is_hostaware)
 		dev->flags |= ATA_DFLAG_ZAC;
 
 	if (!(dev->flags & ATA_DFLAG_ZAC))
@@ -2306,9 +2303,15 @@ static void ata_dev_config_zac(struct ata_device *dev)
 	if (!err_mask) {
 		u64 zoned_cap, opt_open, opt_nonseq, max_open;
 
-		zoned_cap = get_unaligned_le64(&identify_buf[8]);
-		if ((zoned_cap >> 63))
-			dev->zac_zoned_cap = (zoned_cap & 1);
+		/*
+		 * Host Aware devices do not set this bit, they are however
+		 * required to support unrestricted reads (defaulted above).
+		 */
+		if (!is_hostaware) {
+			zoned_cap = get_unaligned_le64(&identify_buf[8]);
+			if ((zoned_cap >> 63))
+				dev->zac_zoned_cap = (zoned_cap & 1);
+		}
 		opt_open = get_unaligned_le64(&identify_buf[24]);
 		if ((opt_open >> 63))
 			dev->zac_zones_optimal_open = (u32)opt_open;

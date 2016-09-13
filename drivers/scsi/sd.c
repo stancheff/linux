@@ -291,6 +291,16 @@ FUA_show(struct device *dev, struct device_attribute *attr, char *buf)
 static DEVICE_ATTR_RO(FUA);
 
 static ssize_t
+urswrz_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct scsi_disk *sdkp = to_scsi_disk(dev);
+
+	return snprintf(buf, 20, "%u\n", sdkp->device->urswrz);
+}
+static DEVICE_ATTR_RO(urswrz);
+
+
+static ssize_t
 protection_type_show(struct device *dev, struct device_attribute *attr,
 		     char *buf)
 {
@@ -483,6 +493,7 @@ static DEVICE_ATTR_RW(max_write_same_blocks);
 static struct attribute *sd_disk_attrs[] = {
 	&dev_attr_cache_type.attr,
 	&dev_attr_FUA.attr,
+	&dev_attr_urswrz.attr,
 	&dev_attr_allow_restart.attr,
 	&dev_attr_manage_start_stop.attr,
 	&dev_attr_protection_type.attr,
@@ -2715,6 +2726,34 @@ static void sd_read_block_limits(struct scsi_disk *sdkp)
 }
 
 /**
+ * sd_read_block_provisioning - Query zoned device VPD page
+ * @disk: disk to query
+ */
+static void sd_read_block_zoned_support(struct scsi_disk *sdkp)
+{
+	unsigned char *buffer = NULL;
+	const int vpd_len = 64;
+
+	/* Default urswrz for non-Host Managed devices */
+	if (sdkp->device->type != TYPE_ZBC)
+		sdkp->device->urswrz = 1;
+
+	/* Don't ask for b6 page if device isn't expected to support it */
+	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC)
+		goto out;
+
+	buffer = kmalloc(vpd_len, GFP_KERNEL);
+	if (!buffer ||
+	    /* Zoned Block device characteristics VPD */
+	    scsi_get_vpd_page(sdkp->device, 0xb6, buffer, vpd_len))
+		goto out;
+
+	sdkp->device->urswrz = buffer[4] & 1;
+out:
+	kfree(buffer);
+}
+
+/**
  * sd_read_block_characteristics - Query block dev. characteristics
  * @disk: disk to query
  */
@@ -2838,14 +2877,13 @@ static int sd_revalidate_disk(struct gendisk *disk)
 	 * react badly if we do.
 	 */
 	if (sdkp->media_present) {
-		sd_read_capacity(sdkp, buffer);
-
 		if (scsi_device_supports_vpd(sdp)) {
 			sd_read_block_provisioning(sdkp);
 			sd_read_block_limits(sdkp);
 			sd_read_block_characteristics(sdkp);
+			sd_read_block_zoned_support(sdkp);
 		}
-
+		sd_read_capacity(sdkp, buffer);
 		sd_read_write_protect_flag(sdkp, buffer);
 		sd_read_cache_type(sdkp, buffer);
 		sd_read_app_tag_own(sdkp, buffer);
