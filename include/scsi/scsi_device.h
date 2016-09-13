@@ -182,6 +182,7 @@ struct scsi_device {
 	unsigned broken_fua:1;		/* Don't set FUA bit */
 	unsigned lun_in_cdb:1;		/* Store LUN bits in CDB[1] */
 	unsigned synchronous_alua:1;	/* Synchronous ALUA commands */
+	unsigned urswrz:1;		/* Unrestricted reads */
 
 	atomic_t disk_events_disable_depth; /* disable depth for disk events */
 
