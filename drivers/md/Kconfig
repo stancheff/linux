@@ -336,6 +336,26 @@ config DM_ERA
          over time.  Useful for maintaining cache coherency when using
          vendor snapshots.
 
+config DM_ZDM
+       tristate "ZDM: Zoned based device target (EXPERIMENTAL)"
+       depends on BLK_DEV_DM
+       default n
+       select LIBCRC32C
+       ---help---
+         This device-mapper target implements a translation layer
+         for zoned block devices (ZBC/ZAC)
+         ZDM performs write serialization and copy-on-write data to
+         ensure forward writing within zones. ZDM also includes a
+         garbage collection model to reclaim stale blocks and remap
+         in use blocks.
+
+         Use zdmadm to create, repair and/or restore ZDM instances.
+
+         To compile this code as a module, choose M here: the module will
+         be called dm-zoned.
+
+         If unsure, say N.
+
 config DM_MIRROR
        tristate "Mirror target"
        depends on BLK_DEV_DM
