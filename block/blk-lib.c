@@ -266,3 +266,141 @@ int blkdev_issue_zeroout(struct block_device *bdev, sector_t sector,
 	return __blkdev_issue_zeroout(bdev, sector, nr_sects, gfp_mask);
 }
 EXPORT_SYMBOL(blkdev_issue_zeroout);
+
+/**
+ * fixup_zone_report() - Adjust origin and/or sector size of report
+ * @bdev:	target blockdev
+ * @rpt:	block zone report
+ * @offmax:	maximum number of zones in report.
+ *
+ * Description:
+ *  Rebase the zone report to the partition and/or change the sector
+ *  size to block layer (order 9) sectors from device logical size.
+ */
+static void fixup_zone_report(struct block_device *bdev,
+			      struct bdev_zone_report *rpt, u32 offmax)
+{
+	u64 offset = get_start_sect(bdev);
+	int lborder = ilog2(bdev_logical_block_size(bdev)) - 9;
+
+	if (offset || lborder) {
+		struct bdev_zone_descriptor *bzde;
+		s64 tmp;
+		u32 iter;
+
+		for (iter = 0; iter < offmax; iter++) {
+			bzde = &rpt->descriptors[iter];
+
+			if (be64_to_cpu(bzde->length) == 0)
+				break;
+
+			tmp = be64_to_cpu(bzde->lba_start) << lborder;
+			tmp -= offset;
+			bzde->lba_start = cpu_to_be64(tmp);
+
+			tmp = be64_to_cpu(bzde->lba_wptr) << lborder;
+			tmp -= offset;
+			bzde->lba_wptr  = cpu_to_be64(tmp);
+		}
+	}
+}
+
+
+/**
+ * blkdev_issue_zone_report - queue a report zones operation
+ * @bdev:	target blockdev
+ * @op_flags:	extra bio rw flags. If unsure, use 0.
+ * @sector:	starting sector (report will include this sector).
+ * @opt:	See: zone_report_option, default is 0 (all zones).
+ * @page:	one or more contiguous pages.
+ * @pgsz:	up to size of page in bytes, size of report.
+ * @gfp_mask:	memory allocation flags (for bio_alloc)
+ *
+ * Description:
+ *    Issue a zone report request for the sectors in question.
+ */
+int blkdev_issue_zone_report(struct block_device *bdev, unsigned int op_flags,
+			     sector_t sector, u8 opt, struct page *page,
+			     size_t pgsz, gfp_t gfp_mask)
+{
+	struct bdev_zone_report *conv = page_address(page);
+	struct bio *bio;
+	unsigned int nr_iovecs = 1;
+	int ret = 0;
+
+	if (pgsz < (sizeof(struct bdev_zone_report) +
+		    sizeof(struct bdev_zone_descriptor)))
+		return -EINVAL;
+
+	bio = bio_alloc(gfp_mask, nr_iovecs);
+	if (!bio)
+		return -ENOMEM;
+
+	conv->descriptor_count = 0;
+	bio->bi_iter.bi_sector = sector;
+	bio->bi_bdev = bdev;
+	bio->bi_vcnt = 0;
+	bio->bi_iter.bi_size = 0;
+
+	bio_add_page(bio, page, pgsz, 0);
+	bio_set_op_attrs(bio, REQ_OP_ZONE_REPORT, op_flags);
+	ret = submit_bio_wait(bio);
+
+	/*
+	 * When our request it nak'd the underlying device maybe conventional
+	 * so ... report a single conventional zone the size of the device.
+	 */
+	if (ret == -EIO && conv->descriptor_count) {
+		/* Adjust the conventional to the size of the partition ... */
+		__be64 blksz = cpu_to_be64(bdev->bd_part->nr_sects);
+
+		conv->maximum_lba = blksz;
+		conv->descriptors[0].type = BLK_ZONE_TYPE_CONVENTIONAL;
+		conv->descriptors[0].flags = BLK_ZONE_NO_WP << 4;
+		conv->descriptors[0].length = blksz;
+		conv->descriptors[0].lba_start = 0;
+		conv->descriptors[0].lba_wptr = blksz;
+		ret = 0;
+	} else if (bio->bi_error == 0) {
+		void *ptr = kmap_atomic(page);
+
+		fixup_zone_report(bdev, ptr, max_report_entries(pgsz));
+		kunmap_atomic(ptr);
+	}
+	bio_put(bio);
+	return ret;
+}
+EXPORT_SYMBOL(blkdev_issue_zone_report);
+
+/**
+ * blkdev_issue_zone_action - queue a report zones operation
+ * @bdev:	target blockdev
+ * @op:		One of REQ_OP_ZONE_* op codes.
+ * @op_flags:	extra bio rw flags. If unsure, use 0.
+ * @sector:	starting lba of sector, Use ~0ul for all zones.
+ * @gfp_mask:	memory allocation flags (for bio_alloc)
+ *
+ * Description:
+ *    Issue a zone report request for the sectors in question.
+ */
+int blkdev_issue_zone_action(struct block_device *bdev, unsigned int op,
+			     unsigned int op_flags, sector_t sector,
+			     gfp_t gfp_mask)
+{
+	int ret;
+	struct bio *bio;
+
+	bio = bio_alloc(gfp_mask, 1);
+	if (!bio)
+		return -ENOMEM;
+
+	bio->bi_iter.bi_sector = sector;
+	bio->bi_bdev = bdev;
+	bio->bi_vcnt = 0;
+	bio->bi_iter.bi_size = 0;
+	bio_set_op_attrs(bio, op, op_flags);
+	ret = submit_bio_wait(bio);
+	bio_put(bio);
+	return ret;
+}
+EXPORT_SYMBOL(blkdev_issue_zone_action);

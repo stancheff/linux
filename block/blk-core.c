@@ -1788,7 +1788,10 @@ static inline void blk_partition_remap(struct bio *bio)
 {
 	struct block_device *bdev = bio->bi_bdev;
 
-	if (bio_sectors(bio) && bdev != bdev->bd_contains) {
+	if (bdev == bdev->bd_contains)
+		return;
+
+	if (bio_sectors(bio) || bio_is_zone_action(bio)) {
 		struct hd_struct *p = bdev->bd_part;
 
 		bio->bi_iter.bi_sector += p->start_sect;
