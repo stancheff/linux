@@ -736,6 +736,7 @@ enum meta_dst_flags {
  * @suspended:
  * @gc_mz_pref:
  * @mz_provision:	Number of zones per 1024 of over-provisioning.
+ * @ata_passthrough:
  * @is_empty:		For fast discards on initial format
  *
  * Longer description of this structure.
@@ -916,6 +917,7 @@ struct zdm {
 	u32 filled_zone;
 	u16 mz_provision;
 	unsigned bdev_is_zoned:1;
+	unsigned ata_passthrough:1;
 	unsigned issue_open_zone:1;
 	unsigned issue_close_zone:1;
 	unsigned is_empty:1;

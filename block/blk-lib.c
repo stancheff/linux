@@ -291,6 +291,7 @@ static void fixup_zone_report(struct block_device *bdev,
 		for (iter = 0; iter < offmax; iter++) {
 			bzde = &rpt->descriptors[iter];
 
+#if 0 /* for external */
 			if (be64_to_cpu(bzde->length) == 0)
 				break;
 
@@ -301,6 +302,18 @@ static void fixup_zone_report(struct block_device *bdev,
 			tmp = be64_to_cpu(bzde->lba_wptr) << lborder;
 			tmp -= offset;
 			bzde->lba_wptr  = cpu_to_be64(tmp);
+#else  /* ata passthrough forced on hack */
+			if (le64_to_cpu(bzde->length) == 0)
+				break;
+
+			tmp = le64_to_cpu(bzde->lba_start) << lborder;
+			tmp -= offset;
+			bzde->lba_start = cpu_to_le64(tmp);
+
+			tmp = le64_to_cpu(bzde->lba_wptr) << lborder;
+			tmp -= offset;
+			bzde->lba_wptr  = cpu_to_le64(tmp);
+#endif
 		}
 	}
 }

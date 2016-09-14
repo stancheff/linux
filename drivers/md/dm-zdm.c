@@ -282,7 +282,7 @@ static void za_endio(struct bio *bio)
 	case REQ_OP_ZONE_FINISH:
 		/* find the zone and set the wp to len on it */
 		break;
-	
+
 	case REQ_OP_ZONE_OPEN:
 	case REQ_OP_ZONE_CLOSE:
 		break;
@@ -365,6 +365,8 @@ static int dmz_zone_action(struct zdm *znd, u64 z_id, unsigned int op,
 	if (!znd->bdev_is_zoned)
 		return wp_err;
 
+	if (znd->ata_passthrough)
+		za.op_f |= REQ_META;
 	/*
 	 * Issue the synchronous I/O from a different thread
 	 * to avoid generic_make_request recursion.
@@ -408,7 +410,7 @@ static int dmz_reset_wp(struct zdm *znd, u64 z_id)
 static int dmz_open_zone(struct zdm *znd, u64 z_id)
 {
 /* FIXME: Just alloc and submit a bio here */
-	
+
 	if (!znd->issue_open_zone)
 		return 0;
 	return dmz_zone_action(znd, z_id, REQ_OP_ZONE_OPEN, 0, 0);
@@ -464,6 +466,8 @@ static int dmz_report_zones(struct zdm *znd, u64 z_id,
 			s_addr -= znd->start_sect << Z_SHFT4K;
 
 #endif
+		if (znd->ata_passthrough)
+			op_f = REQ_META;
 
 		wp_err = blkdev_issue_zone_report(bdev, op_f, s_addr, opt,
 						  pgs, bufsz, GFP_KERNEL);
@@ -1055,6 +1059,7 @@ static int zoned_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		znd->bdev_is_zoned = 1;
 	if (zbc_probe)
 		znd->bdev_is_zoned = 1;
+	znd->ata_passthrough = 1;
 
 	r = zoned_init_disk(ti, znd, create, force);
 	if (r) {
@@ -1493,7 +1498,7 @@ static void _common_endio(struct zdm *znd, struct bio *bio)
 		if (bio->bi_bdev == bdev->bd_contains &&
 		    bio_op(bio) == REQ_OP_WRITE &&
 		    lba > znd->sec_dev_start_sect) {
-			
+
 			lba = lba - znd->sec_dev_start_sect
 				 - (znd->sec_zone_align >> Z_SHFT4K);
 			if (lba > 0)
@@ -2134,8 +2139,7 @@ static int zm_read_bios(struct zdm *znd, struct bio *bio, u64 s_zdm)
 	do {
 		count = blks = dm_div_up(bio->bi_iter.bi_size, Z_C4K);
 		ua_off = bio->bi_iter.bi_sector & 0x0007;
-		ua_size = bio->bi_iter.bi_size & 0x0FFF;	/* in bytes */
-
+		ua_size = bio->bi_iter.bi_size & 0x0FFF;
 		blba = current_map_range(znd, s_zdm, &count, gfp);
 		s_zdm += count;
 		sectors = (count << Z_SHFT4K);

@@ -1097,6 +1097,21 @@ static inline unsigned ata_set_lba_range_entries(void *_buffer,
 	return used_bytes;
 }
 
+/**
+ * _lba_to_cmd_ata() - Copy lba48 to ATA command
+ * @cmd: ATA command as an array of bytes
+ * @_lba: lba48 in the low 48 bits
+ */
+static inline void _lba_to_cmd_ata(u8 *cmd, u64 _lba)
+{
+	cmd[1] =  _lba	      & 0xff;
+	cmd[3] = (_lba >>  8) & 0xff;
+	cmd[5] = (_lba >> 16) & 0xff;
+	cmd[0] = (_lba >> 24) & 0xff;
+	cmd[2] = (_lba >> 32) & 0xff;
+	cmd[4] = (_lba >> 40) & 0xff;
+}
+
 static inline bool ata_ok(u8 status)
 {
 	return ((status & (ATA_BUSY | ATA_DRDY | ATA_DF | ATA_DRQ | ATA_ERR))

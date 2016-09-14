@@ -52,6 +52,7 @@
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
 #include <linux/pr.h>
+#include <linux/ata.h>
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
 
@@ -122,6 +123,10 @@ static void sd_print_result(const struct scsi_disk *, const char *, int);
 
 static DEFINE_SPINLOCK(sd_index_lock);
 static DEFINE_IDA(sd_index_ida);
+
+static int zbc_use_ata16 = 1;
+module_param_named(zbc_use_ata16, zbc_use_ata16, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(zbc_use_ata16, "Some controllers / drivers break on ZBC");
 
 /* This semaphore is used to mediate the 0->1 reference get in the
  * face of object destruction (i.e. we can't allow a get on an
@@ -1153,9 +1158,9 @@ static int sd_setup_zone_report_cmnd(struct scsi_cmnd *cmd)
 	struct scsi_disk *sdkp = scsi_disk(rq->rq_disk);
 	struct bio *bio = rq->bio;
 	sector_t sector = blk_rq_pos(rq);
-	struct gendisk *disk = rq->rq_disk;
 	unsigned int nr_bytes = blk_rq_bytes(rq);
 	int ret = BLKPREP_KILL;
+	u8 rpt_opt = ZBC_ZONE_REPORTING_OPTION_ALL;
 
 	WARN_ON(nr_bytes == 0);
 
@@ -1166,18 +1171,26 @@ static int sd_setup_zone_report_cmnd(struct scsi_cmnd *cmd)
 	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC) {
 		void *src;
 		struct bdev_zone_report *conv;
+		__be64 blksz = cpu_to_be64(sdkp->capacity);
 
-		if (nr_bytes < sizeof(struct bdev_zone_report))
+		if (nr_bytes < 512)
 			goto out;
 
 		src = kmap_atomic(bio->bi_io_vec->bv_page);
 		conv = src + bio->bi_io_vec->bv_offset;
 		conv->descriptor_count = cpu_to_be32(1);
 		conv->same_field = BLK_ZONE_SAME_ALL;
-		conv->maximum_lba = cpu_to_be64(disk->part0.nr_sects);
+		conv->maximum_lba = blksz;
+		conv->descriptors[0].type = BLK_ZONE_TYPE_CONVENTIONAL;
+		conv->descriptors[0].flags = BLK_ZONE_NO_WP << 4;
+		conv->descriptors[0].length = blksz;
+		conv->descriptors[0].lba_start = 0;
+		conv->descriptors[0].lba_wptr = blksz;
 		kunmap_atomic(src);
 		goto out;
 	}
+	/* FUTURE ... when streamid is available */
+	/* rpt_opt = bio_get_streamid(bio); */
 
 	ret = scsi_init_io(cmd);
 	if (ret != BLKPREP_OK)
@@ -1192,13 +1205,26 @@ static int sd_setup_zone_report_cmnd(struct scsi_cmnd *cmd)
 
 	cmd->cmd_len = 16;
 	memset(cmd->cmnd, 0, cmd->cmd_len);
-	cmd->cmnd[0] = ZBC_IN;
-	cmd->cmnd[1] = ZI_REPORT_ZONES;
-	put_unaligned_be64(sector, &cmd->cmnd[2]);
-	put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
-	/* FUTURE ... when streamid is available */
-	/* cmd->cmnd[14] = bio_get_streamid(bio); */
+	if (sdp->use_ata16_for_zbc) {
+		cmd->cmnd[0] = ATA_16;
+		cmd->cmnd[1] = (0x6 << 1) | 1;
+		cmd->cmnd[2] = 0x0e;
+		cmd->cmnd[3] = rpt_opt;
+		cmd->cmnd[4] = ATA_SUBCMD_ZAC_MGMT_IN_REPORT_ZONES;
+		cmd->cmnd[5] = ((nr_bytes / 512) >> 8) & 0xff;
+		cmd->cmnd[6] = (nr_bytes / 512) & 0xff;
 
+		_lba_to_cmd_ata(&cmd->cmnd[7], sector);
+
+		cmd->cmnd[13] = 1 << 6;
+		cmd->cmnd[14] = ATA_CMD_ZAC_MGMT_IN;
+	} else {
+		cmd->cmnd[0] = ZBC_IN;
+		cmd->cmnd[1] = ZI_REPORT_ZONES;
+		put_unaligned_be64(sector, &cmd->cmnd[2]);
+		put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
+		cmd->cmnd[14] = rpt_opt;
+	}
 	cmd->sc_data_direction = DMA_FROM_DEVICE;
 	cmd->sdb.length = nr_bytes;
 	cmd->transfersize = sdp->sector_size;
@@ -1219,6 +1245,9 @@ static int sd_setup_zone_action_cmnd(struct scsi_cmnd *cmd)
 
 	if (sdkp->zoned != 1 && sdkp->device->type != TYPE_ZBC)
 		goto out;
+
+	rq->timeout = SD_TIMEOUT;
+	rq->completion_data = NULL;
 
 	if (sector == ~0ul) {
 		allbit = 1;
@@ -1247,7 +1276,18 @@ static int sd_setup_zone_action_cmnd(struct scsi_cmnd *cmd)
 	}
 	cmd->cmnd[14] = allbit;
 	put_unaligned_be64(sector, &cmd->cmnd[2]);
-
+	if (sdkp->device->use_ata16_for_zbc) {
+		cmd->cmnd[4] = cmd->cmnd[1];
+		cmd->cmnd[0] = ATA_16;
+		cmd->cmnd[1] = (3 << 1) | 1;
+		cmd->cmnd[2] = 0;
+		cmd->cmnd[3] = allbit;
+		cmd->cmnd[5] = 0;
+		cmd->cmnd[6] = 0;
+		_lba_to_cmd_ata(&cmd->cmnd[7], sector);
+		cmd->cmnd[13] = 1 << 6;
+		cmd->cmnd[14] = ATA_CMD_ZAC_MGMT_OUT;
+	}
 	cmd->transfersize = 0;
 	cmd->underflow = 0;
 	cmd->allowed = SD_MAX_RETRIES;
@@ -2886,7 +2926,7 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 {
 	unsigned char *buffer;
 	u16 rot;
-	const int vpd_len = 64;
+	const int vpd_len = 512; /* this will bork a certain aac HBA */
 
 	buffer = kmalloc(vpd_len, GFP_KERNEL);
 
@@ -2903,6 +2943,15 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 	}
 
 	sdkp->zoned = (buffer[8] >> 4) & 3;
+	if (sdkp->zoned != 1) {
+		struct scsi_device *sdev = sdkp->device;
+
+		if (!scsi_get_vpd_page(sdev, 0x89, buffer, SD_BUF_SIZE)) {
+			sdkp->zoned = ata_id_zoned_cap((u16 *)&buffer[60]);
+			if (sdkp->zoned == 1)
+				sdev->use_ata16_for_zbc = 1;
+		}
+	}
 
  out:
 	kfree(buffer);
@@ -3150,6 +3199,7 @@ static void sd_probe_async(void *data, async_cookie_t cookie)
 	gd->queue = sdkp->device->request_queue;
 
 	/* defaults, until the device tells us otherwise */
+	sdp->use_ata16_for_zbc = zbc_use_ata16;
 	sdp->sector_size = 512;
 	sdkp->capacity = 0;
 	sdkp->media_present = 1;
