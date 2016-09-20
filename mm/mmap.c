@@ -724,6 +724,25 @@ again:
 			vma_interval_tree_remove(next, root);
 	}
 
+	if (remove_next == 1) {
+		/*
+		 * vm_page_prot and vm_flags can be read by the
+		 * rmap_walk, for example in remove_migration_ptes(),
+		 * so before releasing the rmap locks the permissions
+		 * of the expanded vmas must be already the correct
+		 * one for the whole merged range.
+		 *
+		 * mprotect case 8 (which sets remove_next == 1) needs
+		 * special handling to provide the above guarantee, as
+		 * it is the only case where the "vma" that is being
+		 * expanded is the one with the wrong permissions for
+		 * the whole merged region. So copy the right
+		 * permissions from the next one that is getting
+		 * removed before releasing the rmap locks.
+		 */
+		vma->vm_page_prot = next->vm_page_prot;
+		vma->vm_flags = next->vm_flags;
+	}
 	if (start != vma->vm_start) {
 		vma->vm_start = start;
 		start_changed = true;
@@ -804,7 +823,16 @@ again:
 		 */
 		next = vma->vm_next;
 		if (remove_next == 2) {
-			remove_next = 1;
+			/*
+			 * No need to transfer vm_page_prot/vm_flags
+			 * in the remove_next == 2 case,
+			 * vma_page_prot/vm_flags of the "vma" was
+			 * already the correct one for the whole range
+			 * in mprotect case 6. So set remove_next to 3
+			 * to skip that. It wouldn't hurt to execute
+			 * it but it's superfluous.
+			 */
+			remove_next = 3;
 			end = next->vm_end;
 			goto again;
 		}
@@ -936,8 +964,14 @@ can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
  *    PPPP    NNNN    PPPPPPPPPPPP    PPPPPPPPNNNN    PPPPNNNNNNNN
  *    might become    case 1 below    case 2 below    case 3 below
  *
- * Odd one out? Case 8, because it extends NNNN but needs flags of XXXX:
- * mprotect_fixup updates vm_flags & vm_page_prot on successful return.
+ * Odd one out? Case 8, because it extends NNNN but needs the
+ * properties of XXXX. In turn the vma_merge caller must update the
+ * properties on successful return of vma_merge. An update in the
+ * caller of those properties is only ok if those properties are never
+ * accessed through rmap_walks (i.e. without the mmap_sem). The
+ * vm_page_prot/vm_flags (which may be accessed by rmap_walks) must be
+ * transferred from XXXX to NNNN in case 8 before releasing the rmap
+ * locks.
  */
 struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			struct vm_area_struct *prev, unsigned long addr,
