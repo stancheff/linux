@@ -125,7 +125,7 @@ obj-y				+= iomap.o
 endif
 
 ifneq ($(CONFIG_MODULES)$(CONFIG_KEXEC_FILE),)
-ifeq ($(CONFIG_WORD_SIZE),64)
+ifeq ($(BITS),64)
 obj-y				+= elf_util.o elf_util_64.o
 endif
 endif
