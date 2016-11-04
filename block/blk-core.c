@@ -1787,8 +1787,9 @@ out_unlock:
 static inline void blk_partition_remap(struct bio *bio)
 {
 	struct block_device *bdev = bio->bi_bdev;
+	bool remap = bio_sectors(bio) != 0 || bio_op(bio) == REQ_OP_ZONE_RESET;
 
-	if (bio_sectors(bio) && bdev != bdev->bd_contains) {
+	if (remap && bdev != bdev->bd_contains) {
 		struct hd_struct *p = bdev->bd_part;
 
 		bio->bi_iter.bi_sector += p->start_sect;
