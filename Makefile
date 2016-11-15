@@ -619,6 +619,11 @@ ARCH_AFLAGS :=
 ARCH_CFLAGS :=
 include arch/$(SRCARCH)/Makefile
 
+KBUILD_CPPFLAGS += $(call cc-option,-fno-pic,)
+KBUILD_CPPFLAGS += $(call cc-option,-fno-pie,)
+
+KBUILD_CFLAGS	+= $(call cc-option,-fno-pic,)
+KBUILD_CFLAGS	+= $(call cc-option,-fno-pie,)
 KBUILD_CFLAGS	+= $(call cc-option,-fno-delete-null-pointer-checks,)
 KBUILD_CFLAGS	+= $(call cc-disable-warning,maybe-uninitialized,)
 
