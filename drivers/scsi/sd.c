@@ -65,6 +65,8 @@
 #include <scsi/scsi_ioctl.h>
 #include <scsi/scsicam.h>
 
+#include <linux/ata.h>
+
 #include "sd.h"
 #include "scsi_priv.h"
 #include "scsi_logging.h"
@@ -122,6 +124,10 @@ static void sd_print_result(const struct scsi_disk *, const char *, int);
 
 static DEFINE_SPINLOCK(sd_index_lock);
 static DEFINE_IDA(sd_index_ida);
+
+static int zbc_use_ata16 = 1;
+module_param_named(zbc_use_ata16, zbc_use_ata16, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(zbc_use_ata16, "Some controllers / drivers break on ZBC");
 
 /* This semaphore is used to mediate the 0->1 reference get in the
  * face of object destruction (i.e. we can't allow a get on an
@@ -2775,13 +2781,13 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 	struct request_queue *q = sdkp->disk->queue;
 	unsigned char *buffer;
 	u16 rot;
-	const int vpd_len = 64;
+	const int vpd_len = 512; /* this will bork a certain aac HBA */
 
 	buffer = kmalloc(vpd_len, GFP_KERNEL);
 
 	if (!buffer ||
 	    /* Block Device Characteristics VPD */
-	    scsi_get_vpd_page(sdkp->device, 0xb1, buffer, vpd_len))
+	    scsi_get_vpd_page(sdkp->device, 0xb1, buffer, 64))
 		goto out;
 
 	rot = get_unaligned_be16(&buffer[4]);
@@ -2792,6 +2798,15 @@ static void sd_read_block_characteristics(struct scsi_disk *sdkp)
 	}
 
 	sdkp->zoned = (buffer[8] >> 4) & 3;
+	if (sdkp->zoned != 1) {
+		struct scsi_device *sdev = sdkp->device;
+
+		if (!scsi_get_vpd_page(sdev, 0x89, buffer, vpd_len)) {
+			sdkp->zoned = ata_id_zoned_cap((u16 *)&buffer[60]);
+			if (sdkp->zoned == 1)
+				sdev->use_ata16_for_zbc = 1;
+		}
+	}
 	if (sdkp->zoned == 1)
 		q->limits.zoned = BLK_ZONED_HA;
 	else if (sdkp->device->type == TYPE_ZBC)
@@ -3049,6 +3064,7 @@ static void sd_probe_async(void *data, async_cookie_t cookie)
 	gd->queue = sdkp->device->request_queue;
 
 	/* defaults, until the device tells us otherwise */
+	sdp->use_ata16_for_zbc = zbc_use_ata16;
 	sdp->sector_size = 512;
 	sdkp->capacity = 0;
 	sdkp->media_present = 1;

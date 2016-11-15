@@ -34,6 +34,8 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_eh.h>
 
+#include <linux/ata.h>
+
 #include "sd.h"
 #include "scsi_priv.h"
 
@@ -73,9 +75,16 @@ static void sd_zbc_parse_report(struct scsi_disk *sdkp,
 	if (buf[1] & 0x02)
 		zone->non_seq = 1;
 
-	zone->len = logical_to_sectors(sdp, get_unaligned_be64(&buf[8]));
-	zone->start = logical_to_sectors(sdp, get_unaligned_be64(&buf[16]));
-	zone->wp = logical_to_sectors(sdp, get_unaligned_be64(&buf[24]));
+	if (sdkp->device->use_ata16_for_zbc) {
+		zone->len = logical_to_sectors(sdp, get_unaligned_le64(&buf[8]));
+		zone->start = logical_to_sectors(sdp, get_unaligned_le64(&buf[16]));
+		zone->wp = logical_to_sectors(sdp, get_unaligned_le64(&buf[24]));
+	} else {
+		zone->len = logical_to_sectors(sdp, get_unaligned_be64(&buf[8]));
+		zone->start = logical_to_sectors(sdp, get_unaligned_be64(&buf[16]));
+		zone->wp = logical_to_sectors(sdp, get_unaligned_be64(&buf[24]));
+	}
+
 	if (zone->type != ZBC_ZONE_TYPE_CONV &&
 	    zone->cond == ZBC_ZONE_COND_FULL)
 		zone->wp = zone->start + zone->len;
@@ -95,10 +104,22 @@ static int sd_zbc_report_zones(struct scsi_disk *sdkp, unsigned char *buf,
 	int result;
 
 	memset(cmd, 0, 16);
-	cmd[0] = ZBC_IN;
-	cmd[1] = ZI_REPORT_ZONES;
-	put_unaligned_be64(lba, &cmd[2]);
-	put_unaligned_be32(buflen, &cmd[10]);
+	if (sdp->use_ata16_for_zbc) {
+		cmd[0] = ATA_16;
+		cmd[1] = (0x6 << 1) | 1;
+		cmd[2] = 0x0e;
+		cmd[4] = ATA_SUBCMD_ZAC_MGMT_IN_REPORT_ZONES;
+		cmd[5] = ((buflen / 512) >> 8) & 0xff;
+		cmd[6] = (buflen / 512) & 0xff;
+		_lba_to_cmd_ata(&cmd[7], lba);
+		cmd[13] = 1 << 6;
+		cmd[14] = ATA_CMD_ZAC_MGMT_IN;
+	} else {
+		cmd[0] = ZBC_IN;
+		cmd[1] = ZI_REPORT_ZONES;
+		put_unaligned_be64(lba, &cmd[2]);
+		put_unaligned_be32(buflen, &cmd[10]);
+	}
 	memset(buf, 0, buflen);
 
 	result = scsi_execute_req(sdp, cmd, DMA_FROM_DEVICE,
@@ -140,16 +161,28 @@ int sd_zbc_setup_report_cmnd(struct scsi_cmnd *cmd)
 	ret = scsi_init_io(cmd);
 	if (ret != BLKPREP_OK)
 		return ret;
-
+	lba = sectors_to_logical(sdkp->device, sector);
 	cmd->cmd_len = 16;
 	memset(cmd->cmnd, 0, cmd->cmd_len);
-	cmd->cmnd[0] = ZBC_IN;
-	cmd->cmnd[1] = ZI_REPORT_ZONES;
-	lba = sectors_to_logical(sdkp->device, sector);
-	put_unaligned_be64(lba, &cmd->cmnd[2]);
-	put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
-	/* Do partial report for speeding things up */
-	cmd->cmnd[14] = ZBC_REPORT_ZONE_PARTIAL;
+	if (sdkp->device->use_ata16_for_zbc) {
+		cmd->cmnd[0] = ATA_16;
+		cmd->cmnd[1] = (0x6 << 1) | 1;
+		cmd->cmnd[2] = 0x0e;
+		cmd->cmnd[3] = ZBC_REPORT_ZONE_PARTIAL;
+		cmd->cmnd[4] = ATA_SUBCMD_ZAC_MGMT_IN_REPORT_ZONES;
+		cmd->cmnd[5] = ((nr_bytes / 512) >> 8) & 0xff;
+		cmd->cmnd[6] = (nr_bytes / 512) & 0xff;
+		_lba_to_cmd_ata(&cmd->cmnd[7], lba);
+		cmd->cmnd[13] = 1 << 6;
+		cmd->cmnd[14] = ATA_CMD_ZAC_MGMT_IN;
+	} else {
+		cmd->cmnd[0] = ZBC_IN;
+		cmd->cmnd[1] = ZI_REPORT_ZONES;
+		put_unaligned_be64(lba, &cmd->cmnd[2]);
+		put_unaligned_be32(nr_bytes, &cmd->cmnd[10]);
+		/* Do partial report for speeding things up */
+		cmd->cmnd[14] = ZBC_REPORT_ZONE_PARTIAL;
+	}
 
 	cmd->sc_data_direction = DMA_FROM_DEVICE;
 	cmd->sdb.length = nr_bytes;
@@ -193,9 +226,14 @@ static void sd_zbc_report_zones_complete(struct scsi_cmnd *scmd,
 
 		if (bytes == 0) {
 			/* Set the report header */
-			hdr.nr_zones = min_t(unsigned int,
-					 (good_bytes - 64) / 64,
-					 get_unaligned_be32(&buf[0]) / 64);
+			if (sdkp->device->use_ata16_for_zbc)
+				hdr.nr_zones = min_t(unsigned int,
+						 (good_bytes - 64) / 64,
+						 get_unaligned_le32(&buf[0]) / 64);
+			else
+				hdr.nr_zones = min_t(unsigned int,
+						 (good_bytes - 64) / 64,
+						 get_unaligned_be32(&buf[0]) / 64);
 			memcpy(buf, &hdr, sizeof(struct blk_zone_report_hdr));
 			offset += 64;
 			bytes += 64;
@@ -256,9 +294,22 @@ int sd_zbc_setup_reset_cmnd(struct scsi_cmnd *cmd)
 
 	cmd->cmd_len = 16;
 	memset(cmd->cmnd, 0, cmd->cmd_len);
-	cmd->cmnd[0] = ZBC_OUT;
-	cmd->cmnd[1] = ZO_RESET_WRITE_POINTER;
-	put_unaligned_be64(block, &cmd->cmnd[2]);
+	if (sdkp->device->use_ata16_for_zbc) {
+		cmd->cmnd[0] = ATA_16;
+		cmd->cmnd[1] = (3 << 1) | 1;
+		cmd->cmnd[2] = 0;
+		cmd->cmnd[3] = 0;
+		cmd->cmnd[4] = ZO_RESET_WRITE_POINTER;
+		cmd->cmnd[5] = 0;
+		cmd->cmnd[6] = 0;
+		_lba_to_cmd_ata(&cmd->cmnd[7], block);
+		cmd->cmnd[13] = 1 << 6;
+		cmd->cmnd[14] = ATA_CMD_ZAC_MGMT_OUT;
+	} else {
+		cmd->cmnd[0] = ZBC_OUT;
+		cmd->cmnd[1] = ZO_RESET_WRITE_POINTER;
+		put_unaligned_be64(block, &cmd->cmnd[2]);
+	}
 
 	rq->timeout = SD_TIMEOUT;
 	cmd->sc_data_direction = DMA_NONE;
@@ -382,9 +433,12 @@ static int sd_zbc_read_zoned_characteristics(struct scsi_disk *sdkp,
 {
 
 	if (scsi_get_vpd_page(sdkp->device, 0xb6, buf, 64)) {
-		sd_printk(KERN_NOTICE, sdkp,
-			  "Unconstrained-read check failed\n");
-		return -ENODEV;
+		if (!sdkp->device->use_ata16_for_zbc) {
+			sd_printk(KERN_NOTICE, sdkp,
+				  "Unconstrained-read check failed\n");
+			return -ENODEV;
+		}
+		buf[4] = 1;
 	}
 
 	if (sdkp->device->type != TYPE_ZBC) {
@@ -422,7 +476,11 @@ static int sd_zbc_check_capacity(struct scsi_disk *sdkp,
 		return ret;
 
 	/* The max_lba field is the capacity of this device */
-	lba = get_unaligned_be64(&buf[8]);
+	if (sdkp->device->use_ata16_for_zbc)
+		lba = get_unaligned_le64(&buf[8]);
+	else
+		lba = get_unaligned_be64(&buf[8]);
+
 	if (lba + 1 == sdkp->capacity)
 		return 0;
 
@@ -464,7 +522,10 @@ static int sd_zbc_check_zone_size(struct scsi_disk *sdkp)
 	same = buf[4] & 0x0f;
 	if (same > 0) {
 		rec = &buf[64];
-		zone_blocks = get_unaligned_be64(&rec[8]);
+		if (sdkp->device->use_ata16_for_zbc)
+			zone_blocks = get_unaligned_le64(&rec[8]);
+		else
+			zone_blocks = get_unaligned_be64(&rec[8]);
 		goto out;
 	}
 
@@ -476,7 +537,10 @@ static int sd_zbc_check_zone_size(struct scsi_disk *sdkp)
 	do {
 
 		/* Parse REPORT ZONES header */
-		list_length = get_unaligned_be32(&buf[0]) + 64;
+		if (sdkp->device->use_ata16_for_zbc)
+			list_length = get_unaligned_le32(&buf[0]) + 64;
+		else
+			list_length = get_unaligned_be32(&buf[0]) + 64;
 		rec = buf + 64;
 		if (list_length < SD_ZBC_BUF_SIZE)
 			buf_len = list_length;
@@ -485,7 +549,10 @@ static int sd_zbc_check_zone_size(struct scsi_disk *sdkp)
 
 		/* Parse zone descriptors */
 		while (rec < buf + buf_len) {
-			zone_blocks = get_unaligned_be64(&rec[8]);
+			if (sdkp->device->use_ata16_for_zbc)
+				zone_blocks = get_unaligned_le64(&rec[8]);
+			else
+				zone_blocks = get_unaligned_be64(&rec[8]);
 			if (sdkp->zone_blocks == 0) {
 				sdkp->zone_blocks = zone_blocks;
 			} else if (zone_blocks != sdkp->zone_blocks &&
