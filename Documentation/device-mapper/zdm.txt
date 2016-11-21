@@ -1,0 +1,152 @@
+Overview of Host Aware ZBC/ZAC Device Mapper
+  - Zone size (256MiB)
+  - v4.10 ZBC support or later ...
+
+ZDM presents a traditional block device for ZBC/ZAC zoned devices.
+
+User space utilities in zdm-tools for creating, repairing and restore
+DM instances at: https://github.com/stancheff and https://github.com/Seagate
+
+ZDM uses a zoned translation layer [ZTL] which shares similarities with
+an FTL. Sometimes referred to as an STL [Shingled translation layer] as
+the physical media restricts differ the core principles remain.
+
+Primary advantages of using a zoned translation layer (ZTL) over a
+zone-caching model include:
+    Low memory usage less than 25 MiB per instance based on cache aging.
+    Consistent first fill performance.
+    Good random write performance.
+    User configurable to match different workloads and QoS.
+
+Disadvantages
+    A small amount of disk is used for ZTL data and over-provisioning.
+    Lower random read performance.
+    Greater code complexity.
+
+
+        Initial Setup (Reported size / addressable space)
+                
+On initial setup ZDM and the zdmadm tool calculate the mount of space
+needed for ZDM internal metadata (lookup tables, superblocks, crcs, etc)
+as well as a percentage of over provisioned space needed for garbage
+collection.
+
+This effectively reduces the amount of addressable space reported by
+the constructed target block device.
+
+Garbage collection by default is a transparent background activity. To
+facilitate the this ZDM reports 'trim' or 'discard' support as well as
+
+The current ZTL I/O model is to request a contiguous block large enough to
+hold the current request and map request to the allocated space and update
+the mapping into the ZTL. The initial update of ZTL is held in an extent
+table that is periodically migrated to the on-disc format and persisted.
+Extent table blocks that are not migrated are incorporated in the superblock
+stream during flush/fua operations. Read operations consult this hierarchy to
+determine the current location of requested blocks.
+
+
+        De-dupe Write Optimization
+
+On write I/Os which are all zeroed are mapped into the discard extent
+tables. The zeroed I/O is not written to disc, on read the empty block
+is generated.
+
+
+        Delayed Writeback Optimization
+
+An optional 1ms delay can be enabled to allow contiguous I/Os to be
+merged. This is mainly used for RAID 4/5/6 as the MD-RAID layer
+presents a 4K block mixed read/write workload which is far from
+optimal for ZDM.
+
+
+        Garbage Collection
+
+Background garbage collection operations are initiated on a periodic trigger
+and on allocation failures (unable to allocate free blocks for writing).
+The zone selected for cleaning is done by estimated the amount of stale
+blocks in the zone, either determined directly by remapped blocks, or estimated
+from discard requests. A zone stale ratio is assigned based on the estimated
+number of stale blocks in the zone. This is the number of free blocks that
+will be recovered once the active blocks in the zone are relocated and the zone
+is reset.
+There are several knobs presented via zdmadm to determine how aggressively
+garbage collection operate as well as the ability to halt automatic garbage
+collection entirely for critical operations. The primary knobs are how stale
+a zone must be and the number of empty zones which are available. The defaults
+are to initiate GC on a fully stale zone all the time and on to start
+considering lesser ratios as the disc when less than 25% of all zones are
+not in use.
+                
+
+        Implementation Overview
+
+-> .map(): DM target map handler
+When a target has I/O to process this handler is called
+
+ - Map incoming bio (bi_iter.bi_sector) onto ZDM exposed address space.
+ - Flag queue as no merge to avoid I/O being re-ordered by any io
+   elevator that may be enabled.
+ - Determine if I/O is a discard, read, or write. If it is a write determine
+   if the I/O is also flagged with FLUSH/FUA. Note: REQ_OP_FLUSH is a write op.
+    - Record the discard via the trim extent cache.
+    - Handle the read
+    - Handle the write. See .end_io() for completion handling.
+ - If flush is in effect queue the metadata worker and wait for completion.
+
+-> .end_io(): DM target endio handler
+When a bio completes this endio handler is notified.
+
+ - If completed operation is a write, update the appropriate zone wp to
+   indicate the wp has actually advanced. If the zone is full update the
+   stale ratio calculation of the zone and it's containing bin.
+
+Metadata worker:
+ - If initialize load previous state from disc
+ - Migrate extent cache entries to ZTL table entries
+ - on flush/fua, push all dirty ZLT blocks, extent cache, superblock et al.
+   to disc and perform a explicit media flush.
+
+Periodic activity (background worker):
+ - If last flush > 30s, queue a flush operation.
+ - If last I/O > DISCARD_IDLE_MSECS process some trim extent cache
+ - Scan for GC candidates and issue GC if found
+ - If cache memory usage is high try to release old blocks of ZLT
+
+GC worker:
+ - Load reverse map for zone and locate forward map ZLT entries.
+ - Build the current zone valid block map (tLBA -> bLBA).
+ - Loop until all valid data is moved out of zone: 
+   - Read valid tLBA entries
+   - Write (relocate) tLBA entries to new zone.
+ - Update map information for all moved (still valid) blocks.
+ - Reset WP on newly cleared zone and add zone to the free pool.
+
+Notable code [struct map_pool]:
+ - array merge sort and insert over non-contiguous pages
+ - binary search over non-contiguous pages
+
+
+        Data Layout
+
+See: z_mapped_sync / z_mapped_init
+
+Zone #0: 
+   Block 0 - Reserved for zdmadm
+   Superblock layout:
+    - 512 blocks (1-512, 513-1024, 1025-1536)
+   WP use/free cache
+    - 2048-~2200 [acutal limit: (2 x <zone count>) / (PAGE_SIZE / sizeof(u32))]
+
+ZLT layout:
+   Zone #1 - z:   Forward map
+   Zone #z+1 - y: Reverse map
+   Zone #y+1:     CRC-16 over forward/reverse map.
+
+Data zones #y+2 to end.
+
+Future plans:
+  Enable 3 generations of WP use/free similar to current superblock scheme.
+  Pack ZLT layout (currently zone aligned) for better CMR utilization.
+  Restore/Expand stream id support when feature is merged.

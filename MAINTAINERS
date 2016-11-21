@@ -13036,6 +13036,13 @@ L:	zd1211-devs@lists.sourceforge.net (subscribers-only)
 S:	Maintained
 F:	drivers/net/wireless/zydas/zd1211rw/
 
+ZDM ZONED DEVICE MAPPER TARGET
+M:	Shaun Tancheff <shaun.tancheff@seagate.com>
+L:	dm-devel@redhat.com
+S:	Maintained
+F:	drivers/md/dm-zdm.*
+F:	drivers/md/libzdm.c
+
 ZPOOL COMPRESSED PAGE STORAGE API
 M:	Dan Streetman <ddstreet@ieee.org>
 L:	linux-mm@kvack.org
