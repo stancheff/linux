@@ -225,7 +225,7 @@ srctree ?= .
 
 build-indep:
 build-arch:
-	\$(MAKE) KERNELRELEASE=${version} ARCH=${ARCH} \
+	\$(MAKE) -j$(nproc) KERNELRELEASE=${version} ARCH=${ARCH} \
 	KBUILD_BUILD_VERSION=${revision} -f \$(srctree)/Makefile
 
 build: build-arch
