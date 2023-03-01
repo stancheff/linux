@@ -1280,6 +1280,194 @@ retry_journal:
 	return ret;
 }
 
+static inline void _to_pagevec(struct folio_batch *batch, pgoff_t index,
+			       struct pagevec *pvec)
+{
+	int i, count = folio_batch_count(batch);
+
+	for (i = 0; i < count; i++) {
+		if (!batch->folios[i] || xa_is_value(batch->folios[i]))
+			pvec->pages[i] = &batch->folios[i]->page;
+		else
+			pvec->pages[i] = folio_file_page(batch->folios[i], index + i);
+	}
+}
+
+static inline
+int _grab_cache_pages_write_begin(struct address_space *mapping, pgoff_t index,
+				  struct pagevec *pvec)
+{
+	int err;
+	struct folio_batch batch;
+
+	folio_batch_init(&batch);
+	batch.nr = pvec->nr; /* # of pages needed */
+	err = grab_cache_folios_fast(mapping, index, &batch,
+			FGP_LOCK | FGP_WRITE | FGP_CREAT | FGP_STABLE,
+			mapping_gfp_mask(mapping));
+	if (!err)
+		_to_pagevec(&batch, index, pvec);
+
+	return err;
+}
+
+static
+int ext4_write_batch_begin(struct file *file, struct address_space *mapping,
+			   loff_t pos, unsigned int len, struct pagevec *pvec,
+			   void **fsdata)
+{
+	struct inode *inode = mapping->host;
+	int ret, needed_blocks;
+	handle_t *handle;
+	int retries = 0;
+	pgoff_t index;
+	int i, count;
+	bool truncated;
+
+	if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
+		return -EIO;
+
+	trace_ext4_write_begin(inode, pos, len);
+	/*
+	 * Reserve one block more for addition to orphan list in case
+	 * we allocate blocks but write fails for some reason
+	 */
+	needed_blocks = ext4_writepage_trans_blocks(inode) + 1;
+	index = pos >> PAGE_SHIFT;
+
+	if (ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA))
+		return -ERANGE; /* slowpath */
+
+	/*
+	 * grab_cache_page_write_begin() can take a long time if the
+	 * system is thrashing due to memory pressure, or if the page
+	 * is being written back.  So grab it first before we start
+	 * the transaction handle.  This also allows us to allocate
+	 * the page (if needed) without using GFP_NOFS.
+	 */
+retry_grab:
+	ret = _grab_cache_pages_write_begin(mapping, index, pvec);
+	if (ret)
+		return -ERANGE;
+	/*
+	 * The same as page allocation, we prealloc buffer heads before
+	 * starting the handle.
+	 */
+	count = pagevec_count(pvec);
+	for (i = 0; i < count; i++) {
+		if (!page_has_buffers(pvec->pages[i]))
+			create_empty_buffers(pvec->pages[i],
+					inode->i_sb->s_blocksize, 0);
+
+		unlock_page(pvec->pages[i]);
+	}
+
+retry_journal:
+	handle = ext4_journal_start(inode, EXT4_HT_WRITE_PAGE, needed_blocks);
+	if (IS_ERR(handle)) {
+		for (i = 0; i < count; i++)
+			put_page(pvec->pages[i]);
+		return PTR_ERR(handle);
+	}
+	truncated = false;
+	for (i = 0; i < count; i++) {
+		lock_page(pvec->pages[i]);
+		if (pvec->pages[i]->mapping != mapping) {
+			unlock_page(pvec->pages[i]);
+			truncated = true;
+			break;
+		}
+	}
+	if (truncated) {
+		while (--i)
+			unlock_page(pvec->pages[i]);
+		for (i = 0; i < count; i++)
+			put_page(pvec->pages[i]);
+		ext4_journal_stop(handle);
+		goto retry_grab;
+	}
+	/* In case writeback began while the page was unlocked */
+	for (i = 0; i < count; i++)
+		wait_for_stable_page(pvec->pages[i]);
+
+	for (i = 0; i < count; i++) {
+		struct page *page = pvec->pages[i];
+		unsigned long offset;
+		unsigned int bytes;
+		loff_t ppos = pos;
+		int r;
+
+		offset = (ppos & (PAGE_SIZE - 1));
+		bytes = min_t(unsigned int, PAGE_SIZE - offset, len);
+
+#ifdef CONFIG_FS_ENCRYPTION
+		if (ext4_should_dioread_nolock(inode))
+			r = ext4_block_write_begin(page, ppos, bytes,
+						   ext4_get_block_unwritten);
+		else
+			r = ext4_block_write_begin(page, ppos, bytes,
+						   ext4_get_block);
+#else
+		if (ext4_should_dioread_nolock(inode))
+			r = __block_write_begin(page, ppos, bytes,
+						ext4_get_block_unwritten);
+		else
+			r = __block_write_begin(page, ppos, bytes,
+						ext4_get_block);
+#endif
+		if (!r && ext4_should_journal_data(inode))
+			r = ext4_walk_page_buffers(handle, inode,
+				page_buffers(page), offset, offset + bytes,
+				NULL, do_journal_get_write_access);
+		if (r) {
+			/* return #of bytes written, or error */
+			ret = r;
+			break;
+		}
+		ppos += bytes;
+	}
+	if (ret) {
+		bool extended = (pos + len > inode->i_size) &&
+				!ext4_verity_in_progress(inode);
+		for (i = 0; i < count; i++)
+			unlock_page(pvec->pages[i]);
+		/*
+		 * __block_write_begin may have instantiated a few blocks
+		 * outside i_size.  Trim these off again. Don't need
+		 * i_size_read because we hold i_rwsem.
+		 *
+		 * Add inode to orphan list in case we crash before
+		 * truncate finishes
+		 */
+		if (extended && ext4_can_truncate(inode))
+			ext4_orphan_add(handle, inode);
+
+		ext4_journal_stop(handle);
+		if (extended) {
+			ext4_truncate_failed_write(inode);
+			/*
+			 * If truncate failed early the inode might
+			 * still be on the orphan list; we need to
+			 * make sure the inode is removed from the
+			 * orphan list in that case.
+			 */
+			if (inode->i_nlink)
+				ext4_orphan_del(NULL, inode);
+		}
+
+		if (ret == -ENOSPC &&
+		    ext4_should_retry_alloc(inode->i_sb, &retries))
+			goto retry_journal;
+
+		for (i = 0; i < count; i++)
+			put_page(pvec->pages[i]);
+
+		return ret;
+	}
+
+	return ret;
+}
+
 /* For write_end() in data=journal mode */
 static int write_end_fn(handle_t *handle, struct inode *inode,
 			struct buffer_head *bh)
@@ -3105,6 +3293,81 @@ retry:
 	return ret;
 }
 
+static
+int ext4_da_write_batch_begin(struct file *file, struct address_space *mapping,
+			      loff_t pos, unsigned int len,
+			      struct pagevec *pvec, void **fsdata)
+{
+	int ret, retries = 0;
+	pgoff_t index;
+	struct inode *inode = mapping->host;
+	int i, count;
+
+	if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
+		return -EIO;
+
+	if (ext4_nonda_switch(inode->i_sb) || ext4_verity_in_progress(inode)) {
+		*fsdata = (void *)FALL_BACK_TO_NONDELALLOC;
+
+		return ext4_write_batch_begin(file, mapping, pos,
+					      len, pvec, fsdata);
+	}
+	*fsdata = (void *)0;
+	trace_ext4_da_write_begin(inode, pos, len);
+
+	if (ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA))
+		return -ERANGE; /* slowpath */
+
+	index = pos >> PAGE_SHIFT;
+
+retry_grab:
+	ret = _grab_cache_pages_write_begin(mapping, index, pvec);
+	if (ret)
+		return -ERANGE;
+
+	/* In case writeback began while the page was unlocked */
+	count = pagevec_count(pvec);
+	for (i = 0; i < count; i++)
+		wait_for_stable_page(pvec->pages[i]);
+	for (i = 0; i < count; i++) {
+		struct page *page = pvec->pages[i];
+		unsigned long offset;
+		unsigned int bytes;
+		loff_t ppos = pos;
+		int r;
+
+		offset = (ppos & (PAGE_SIZE - 1));
+		bytes = min_t(unsigned int, PAGE_SIZE - offset, len);
+
+#ifdef CONFIG_FS_ENCRYPTION
+		r = ext4_block_write_begin(page, ppos, bytes, ext4_da_get_block_prep);
+#else
+		r = __block_write_begin(page, ppos, bytes, ext4_da_get_block_prep);
+#endif
+		if (r) {
+			/* return #of bytes written, or error */
+			ret = r;
+			break;
+		}
+		ppos += bytes;
+	}
+	if (ret) {
+		for (i = 0; i < count; i++) {
+			unlock_page(pvec->pages[i]);
+			put_page(pvec->pages[i]);
+		}
+
+		if (pos + len > inode->i_size)
+			ext4_truncate_failed_write(inode);
+
+		if (ret == -ENOSPC &&
+		    ext4_should_retry_alloc(inode->i_sb, &retries))
+			goto retry_grab;
+		return ret;
+	}
+	return ret;
+}
+
 /*
  * Check if we should update i_disksize
  * when write to the end of file but not require block allocation
@@ -3728,6 +3991,7 @@ static const struct address_space_operations ext4_aops = {
 	.writepages		= ext4_writepages,
 	.write_begin		= ext4_write_begin,
 	.write_end		= ext4_write_end,
+	.write_batch_begin	= ext4_write_batch_begin,
 	.dirty_folio		= ext4_dirty_folio,
 	.bmap			= ext4_bmap,
 	.invalidate_folio	= ext4_invalidate_folio,
@@ -3745,6 +4009,7 @@ static const struct address_space_operations ext4_journalled_aops = {
 	.writepages		= ext4_writepages,
 	.write_begin		= ext4_write_begin,
 	.write_end		= ext4_journalled_write_end,
+	.write_batch_begin	= ext4_write_batch_begin,
 	.dirty_folio		= ext4_journalled_dirty_folio,
 	.bmap			= ext4_bmap,
 	.invalidate_folio	= ext4_journalled_invalidate_folio,
@@ -3762,6 +4027,7 @@ static const struct address_space_operations ext4_da_aops = {
 	.writepages		= ext4_writepages,
 	.write_begin		= ext4_da_write_begin,
 	.write_end		= ext4_da_write_end,
+	.write_batch_begin	= ext4_da_write_batch_begin,
 	.dirty_folio		= ext4_dirty_folio,
 	.bmap			= ext4_bmap,
 	.invalidate_folio	= ext4_invalidate_folio,

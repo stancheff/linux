@@ -271,7 +271,9 @@ static ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
 					struct iov_iter *from)
 {
 	ssize_t ret;
+	loff_t pos = iocb->ki_pos;
 	struct inode *inode = file_inode(iocb->ki_filp);
+	unsigned long len = iov_iter_count(from);
 
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EOPNOTSUPP;
@@ -282,7 +284,10 @@ static ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
 		goto out;
 
 	current->backing_dev_info = inode_to_bdi(inode);
-	ret = generic_perform_write(iocb, from);
+	if ((pos & (PAGE_SIZE - 1)) == 0 && len > (PAGE_SIZE << 2))
+		ret = generic_perform_batch_write(iocb, from);
+	else
+		ret = generic_perform_write(iocb, from);
 	current->backing_dev_info = NULL;
 
 out:
