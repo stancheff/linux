@@ -1874,6 +1874,344 @@ out:
 	return folio;
 }
 
+struct fc_entry {
+	struct xa_state xas;
+	void *old;
+	unsigned int nr;
+	unsigned int huge:1,
+		     referenced:1,
+		     charged:1,
+		     stored:1,
+		     conflict:1;
+};
+
+noinline
+int __filemap_add_batch(struct address_space *mapping,
+			struct folio_batch *batch, pgoff_t index, gfp_t gfp,
+			struct folio_batch *shadowp)
+{
+	struct fc_entry fce[PAGEVEC_SIZE];
+	struct folio *folio;
+	int i, count = folio_batch_count(batch);
+	unsigned int order;
+	int error = 0;
+	int store_failed = 0;
+
+	memset(fce, 0, sizeof(fce));
+
+	for (i = 0; i < count; i++) {
+		folio = batch->folios[i];
+
+		fce[i].xas.xa = &mapping->i_pages;
+		fce[i].xas.xa_index = index + i;
+		fce[i].xas.xa_node = XAS_RESTART;
+		fce[i].huge = folio_test_hugetlb(folio);
+
+		VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+		VM_BUG_ON_FOLIO(folio_test_swapbacked(folio), folio);
+
+		mapping_set_update(&fce[i].xas, mapping);
+
+		if (!fce[i].huge) {
+			error = mem_cgroup_charge(folio, NULL, gfp);
+			if (error)
+				goto error;
+			fce[i].charged = 1;
+		}
+	}
+
+	gfp &= GFP_RECLAIM_MASK;
+
+	for (i = 0; i < count; i++) {
+		folio = batch->folios[i];
+		fce[i].nr = 1;
+
+		if (!fce[i].huge)
+			fce[i].nr = folio_nr_pages(folio);
+		folio_ref_add(folio, fce[i].nr);
+		fce[i].referenced = 1;
+		folio->mapping = mapping;
+		folio->index = fce[i].xas.xa_index;
+	}
+
+again:
+	for (i = 0; i < count; i++) {
+		folio = batch->folios[i];
+		order = xa_get_order(fce[i].xas.xa, fce[i].xas.xa_index);
+		if (order > folio_order(folio))
+			xas_split_alloc(&fce[i].xas,
+				xa_load(fce[i].xas.xa,
+					fce[i].xas.xa_index), order, gfp);
+	}
+
+	xa_lock_irq(&mapping->i_pages);
+
+	/* find shadows ... */
+	for (i = 0; i < count; i++) {
+		void *entry;
+
+		if (fce[i].conflict)
+			continue;
+
+		fce[i].old = NULL;
+		xas_for_each_conflict(&fce[i].xas, entry) {
+			fce[i].old = entry;
+			if (!xa_is_value(entry)) {
+				error = -EEXIST;
+				goto unlock;
+			}
+		}
+		fce[i].conflict = 1;
+	}
+
+	for (i = 0; i < count; i++) {
+		folio = batch->folios[i];
+
+		if (fce[i].stored)
+			continue;
+
+		if (fce[i].old) {
+			shadowp->folios[i] = fce[i].old;
+			/* entry may have been split before we acquired lock */
+			order = xa_get_order(fce[i].xas.xa, fce[i].xas.xa_index);
+			if (order > folio_order(folio)) {
+				/* How to handle large swap entries? */
+				BUG_ON(shmem_mapping(mapping));
+				xas_split(&fce[i].xas, fce[i].old, order);
+				xas_reset(&fce[i].xas);
+			}
+			fce[i].old = NULL;
+		}
+		xas_store(&fce[i].xas, folio);
+		if (xas_error(&fce[i].xas)) {
+			store_failed = xas_error(&fce[i].xas);
+			break;
+		}
+		fce[i].stored = 1;
+		mapping->nrpages += fce[i].nr;
+		if (!fce[i].huge) {
+			__lruvec_stat_mod_folio(folio, NR_FILE_PAGES, fce[i].nr);
+			if (folio_test_pmd_mappable(folio))
+				__lruvec_stat_mod_folio(folio, NR_FILE_THPS, fce[i].nr);
+		}
+	}
+
+unlock:
+	xa_unlock_irq(&mapping->i_pages);
+
+	/* alloc more mapping space */
+	if (store_failed) {
+		bool retry = false;
+		for (i = 0; i < count; i++)
+			if (!fce[i].stored && xas_nomem(&fce[i].xas, gfp))
+				retry = true;
+		if (retry)
+			goto again;
+	}
+error:
+	if (error) {
+		for (i = 0; i < count; i++) {
+			if (fce[i].charged)
+				mem_cgroup_uncharge(batch->folios[i]);
+			batch->folios[i]->mapping = NULL;
+
+			/* Leave page->index set: truncation relies upon it */
+			if (fce[i].referenced)
+				folio_put_refs(batch->folios[i], fce[i].nr);
+		}
+	}
+	for (i = 0; i < count; i++)
+		trace_mm_filemap_add_to_page_cache(batch->folios[i]);
+
+	return error;
+}
+
+int filemap_add_batch(struct address_space *mapping, struct folio_batch *batch,
+				pgoff_t index, gfp_t gfp)
+{
+	struct folio_batch shadow;
+	int ret;
+	int i, count = folio_batch_count(batch);
+
+	folio_batch_init(&shadow);
+	shadow.nr = batch->nr;
+
+	for (i = 0; i < count; i++) {
+		__folio_set_locked(batch->folios[i]);
+		shadow.folios[i] = NULL;
+	}
+
+	ret = __filemap_add_batch(mapping, batch, index, gfp, &shadow);
+	if (unlikely(ret)) {
+		for (i = 0; i < count; i++)
+			__folio_clear_locked(batch->folios[i]);
+	} else {
+		/*
+		 * The folio might have been evicted from cache only
+		 * recently, in which case it should be activated like
+		 * any other repeatedly accessed folio.
+		 * The exception is folios getting rewritten; evicting other
+		 * data from the working set, only to cache data that will
+		 * get overwritten with something else, is a waste of memory.
+		 */
+		for (i = 0; i < count; i++) {
+			WARN_ON_ONCE(folio_test_active(batch->folios[i]));
+			if (!(gfp & __GFP_WRITE) && shadow.folios[i])
+				workingset_refault(batch->folios[i],
+						   shadow.folios[i]);
+			folio_add_lru(batch->folios[i]);
+		}
+	}
+	return ret;
+}
+EXPORT_SYMBOL_GPL(filemap_add_batch);
+
+/* trylock a batch of folios */
+static inline bool batch_folio_trylock(struct folio_batch *batch)
+{
+	int i, count = folio_batch_count(batch);
+	bool all_locked = true;
+
+	for (i = 0; i < count; i++) {
+		if (!folio_trylock(batch->folios[i])) {
+			folio_put(batch->folios[i]);
+			batch->folios[i] = NULL;
+			all_locked = false;
+			break;
+		}
+	}
+	/* we could not lock some .. so unlock them all */
+	if (!all_locked)  {
+		while (--i >= 0) {
+			folio_unlock(batch->folios[i]);
+			folio_put(batch->folios[i]);
+			batch->folios[i] = NULL;
+		}
+	}
+
+	return all_locked;
+}
+
+/* optimize gcp for bulk (new) i/o */
+int grab_cache_folios_fast(struct address_space *mapping,
+			    pgoff_t index,
+			    struct folio_batch *batch,
+			    int fgp_flags,
+			    gfp_t gfp)
+{
+	int i, count = folio_batch_count(batch);
+	struct folio *folio;
+	unsigned long nopage = 0;
+	unsigned long mapped = 0;
+	int err;
+
+	if (fgp_flags & FGP_ENTRY)
+		return -EINVAL;
+	if (fgp_flags & FGP_FOR_MMAP)
+		return -EINVAL;
+
+	/* if we have *EXISTING* pages then slowpath is needed */
+	for (i = 0; i < count; i++) {
+		folio = mapping_get_entry(mapping, index + i);
+		if (xa_is_value(folio))
+			folio = NULL;
+		if (folio)
+			mapped |= BIT(i);
+		else
+			nopage |= BIT(i);
+		batch->folios[i] = folio;
+	}
+	if (!(mapped | nopage))
+		return -EWOULDBLOCK;
+	if (mapped && nopage)
+		return -EWOULDBLOCK;
+
+	/* all the pages are already in the page cache */
+	if (mapped) {
+		if (fgp_flags & FGP_LOCK) {
+			bool truncated = false;
+			if (fgp_flags & FGP_NOWAIT) {
+				if (!batch_folio_trylock(batch)) {
+					return -EWOULDBLOCK;
+				}
+			} else {
+				for (i = 0; i < count; i++)
+					folio_lock(batch->folios[i]);
+			}
+			for (i = 0; i < count; i++)
+				if (batch->folios[i]->mapping != mapping)
+					truncated = true;
+			if (truncated) {
+				for (i = 0; i < count; i++) {
+					folio_unlock(batch->folios[i]);
+					folio_put(batch->folios[i]);
+					batch->folios[i] = NULL;
+				}
+				return -EWOULDBLOCK;
+			}
+		}
+
+		for (i = 0; i < count; i++) {
+			if (fgp_flags & FGP_ACCESSED)
+				folio_mark_accessed(batch->folios[i]);
+			else if (fgp_flags & FGP_WRITE) {
+				/* Clear idle flag for buffer write */
+				if (folio_test_idle(batch->folios[i]))
+					folio_clear_idle(batch->folios[i]);
+			}
+
+			if (fgp_flags & FGP_STABLE)
+				folio_wait_stable(batch->folios[i]);
+		}
+		return 0; /* success, everything is already mapped */
+	}
+	if (!(fgp_flags & FGP_CREAT))
+		return -ENODATA;
+
+	if (!(fgp_flags & FGP_LOCK))
+		return -EINVAL;
+
+	if ((fgp_flags & FGP_WRITE) && mapping_can_writeback(mapping))
+		gfp |= __GFP_WRITE;
+	if (fgp_flags & FGP_NOFS)
+		gfp &= ~__GFP_FS;
+	if (fgp_flags & FGP_NOWAIT) {
+		gfp &= ~GFP_KERNEL;
+		gfp |= GFP_NOWAIT | __GFP_NOWARN;
+	}
+
+	nopage = 0;
+	for (i = 0; i < count; i++) {
+		batch->folios[i] = filemap_alloc_folio(gfp, 0);
+		if (!batch->folios[i]) {
+			nopage |= BIT(i);
+			break;
+		}
+	}
+	if (nopage) {
+		while (--i >= 0) {
+			folio_put(batch->folios[i]);
+			batch->folios[i] = NULL;
+		}
+		return -ENOMEM;
+	}
+
+	/* Init accessed so avoid atomic mark_page_accessed later */
+	if (fgp_flags & FGP_ACCESSED)
+		for (i = 0; i < count; i++)
+			__folio_set_referenced(batch->folios[i]);
+
+	err = filemap_add_batch(mapping, batch, index, gfp);
+	if (unlikely(err)) {
+		for (i = 0; i < count; i++) {
+			folio_put(batch->folios[i]);
+			batch->folios[i] = NULL;
+		}
+	}
+	return err;
+}
+EXPORT_SYMBOL_GPL(grab_cache_folios_fast);
+
 /**
  * __filemap_get_folio - Find and get a reference to a folio.
  * @mapping: The address_space to search.
@@ -3732,6 +4070,194 @@ out:
 	return written;
 }
 EXPORT_SYMBOL(generic_file_direct_write);
+
+static inline void flush_dcache_batch(struct pagevec *pvec)
+{
+	int i, count = pagevec_count(pvec);
+
+	for (i = 0; i < count; i++)
+		flush_dcache_page(pvec->pages[i]);
+}
+
+static inline size_t copy_pagevec_from_iter_atomic(size_t *blks,
+	struct pagevec *pvec, unsigned long off, unsigned long len,
+	struct iov_iter *iter)
+{
+	size_t copied = 0;
+	int i, count = pagevec_count(pvec);
+
+	for (i = 0; i < count; i++) {
+		struct page *page = pvec->pages[i];
+		unsigned long one = min_t(unsigned long, PAGE_SIZE - off, len);
+
+		blks[i] = copy_page_from_iter_atomic(page, off, one, iter);
+		WARN(blks[i] != one, "Expected %zd / got: %zd", one, blks[i]);
+		flush_dcache_page(page);
+		off = 0;
+		len -= one;
+		copied += blks[i];
+	}
+	return copied;
+}
+
+static inline int write_batch_begin(struct file *file,
+	struct address_space *mapping, loff_t pos, unsigned int len,
+	struct pagevec *pvec, void *fsdata[])
+{
+	const struct address_space_operations *a_ops = mapping->a_ops;
+	int i, count = pagevec_count(pvec);
+	int status = -ERANGE;
+
+	if (a_ops->write_batch_begin)
+		status = a_ops->write_batch_begin(file, mapping, pos, len,
+						  pvec, fsdata);
+	if (status != -ERANGE) {
+		for (i = 1; i < count; i++)
+			fsdata[i] = fsdata[0];
+		return status;
+	}
+
+	status = 0;
+	for (i = 0; i < count; i++) {
+		unsigned long offset;	/* Offset into pagecache page */
+		unsigned int bytes;	/* Bytes to write to page */
+		int err;
+
+		if (i)
+			fsdata[i] = fsdata[0];
+		offset = (pos & (PAGE_SIZE - 1));
+		bytes = min_t(unsigned int, PAGE_SIZE - offset, len);
+		err = a_ops->write_begin(file, mapping,
+					 pos, bytes, &pvec->pages[i], &fsdata[i]);
+		if (err) {
+			status = err;
+			break;
+		}
+		pos += bytes;
+		len -= bytes;
+		offset = 0;
+	}
+	return status;
+}
+
+static inline int write_batch_end(struct file *file,
+	struct address_space *mapping, loff_t pos, unsigned int len,
+	struct pagevec *pvec, size_t *blks, size_t copied, void *fsdata[])
+{
+	const struct address_space_operations *a_ops = mapping->a_ops;
+	int i, count;
+	int status = -ERANGE;
+
+	if (a_ops->write_batch_end)
+		status = a_ops->write_batch_end(file, mapping, pos, len, copied,
+						pvec, fsdata[0]);
+	if (status != -ERANGE)
+		return status;
+
+	status = 0;
+	count = pagevec_count(pvec);
+	for (i = 0; i < count; i++) {
+		unsigned long offset;	/* Offset into pagecache page */
+		unsigned int bytes;	/* Bytes to write to page */
+		int n;
+
+		offset = (pos & (PAGE_SIZE - 1));
+		bytes = min_t(unsigned int, PAGE_SIZE - offset, len);
+
+		n = a_ops->write_end(file, mapping, pos, bytes,
+				     blks[i], pvec->pages[i], fsdata[i]);
+		if (n < 0) {
+			/* return #of bytes written, or error */
+			status = status ?: n;
+			/* unlock any remaining pages */
+			for (++i; i < count; i++)
+				put_page(pvec->pages[i]);
+			break;
+		}
+		status += n; /* inc. #of bytes written */
+		pos += bytes;
+		len -= bytes;
+		offset = 0;
+	}
+	return status;
+}
+
+ssize_t generic_perform_batch_write(struct kiocb *iocb, struct iov_iter *i)
+{
+	struct file *file = iocb->ki_filp;
+	loff_t pos = iocb->ki_pos;
+	struct address_space *mapping = file->f_mapping;
+	long status = 0;
+	ssize_t written = 0;
+
+	do {
+		unsigned long offset;	/* Offset into pagecache page */
+		unsigned long bytes;	/* Bytes to write to page */
+		size_t copied;		/* Bytes copied from user */
+		void *fsdata[PAGEVEC_SIZE];
+		struct pagevec pvec;
+		size_t blks[PAGEVEC_SIZE] = {0};
+
+		pagevec_init(&pvec);
+		offset = (pos & (PAGE_SIZE - 1));
+		bytes = min_t(unsigned long, PAGE_SIZE * PAGEVEC_SIZE - offset,
+					     iov_iter_count(i));
+		pvec.nr = DIV_ROUND_UP(bytes, PAGE_SIZE);
+
+again:
+		/*
+		 * Bring in the user page that we will copy from _first_.
+		 * Otherwise there's a nasty deadlock on copying from the
+		 * same page as we're writing to, without it being marked
+		 * up-to-date.
+		 */
+		if (unlikely(fault_in_iov_iter_readable(i, bytes) == bytes)) {
+			status = -EFAULT;
+			break;
+		}
+
+		if (fatal_signal_pending(current)) {
+			status = -EINTR;
+			break;
+		}
+
+		memset(fsdata, 0, sizeof(fsdata));
+		status = write_batch_begin(file, mapping, pos, bytes, &pvec,
+					   fsdata);
+		if (unlikely(status < 0))
+			break;
+		if (mapping_writably_mapped(mapping))
+			flush_dcache_batch(&pvec);
+		copied = copy_pagevec_from_iter_atomic(blks, &pvec, offset, bytes, i);
+		status = write_batch_end(file, mapping, pos, bytes,
+					 &pvec, blks, copied, fsdata);
+		if (unlikely(status != copied)) {
+			iov_iter_revert(i, copied - max(status, 0L));
+			if (unlikely(status < 0))
+				break;
+		}
+		cond_resched();
+
+		if (unlikely(status == 0)) {
+			/*
+			 * A short copy made ->write_end() reject the
+			 * thing entirely.  Might be memory poisoning
+			 * halfway through, might be a race with munmap,
+			 * might be severe memory pressure.
+			 */
+			if (copied)
+				bytes = copied;
+			goto again;
+		}
+		pos += status;
+		written += status;
+
+		balance_dirty_pages_ratelimited(mapping);
+	} while (iov_iter_count(i));
+
+	return written ? written : status;
+}
+EXPORT_SYMBOL(generic_perform_batch_write);
 
 ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
 {

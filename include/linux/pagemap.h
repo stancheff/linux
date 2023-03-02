@@ -511,6 +511,8 @@ struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
 		int fgp_flags, gfp_t gfp);
 struct page *pagecache_get_page(struct address_space *mapping, pgoff_t index,
 		int fgp_flags, gfp_t gfp);
+int grab_cache_folios_fast(struct address_space *mapping, pgoff_t index,
+		struct folio_batch *batch, int fgp_flags, gfp_t gfp);
 
 /**
  * filemap_get_folio - Find and get a folio.
