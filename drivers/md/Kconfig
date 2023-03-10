@@ -377,6 +377,18 @@ config DM_CLONE
 
 	 If unsure, say N.
 
+config DM_DEDUPE
+	tristate "DEDUPE: skip writting 0'd bios (EXPERIMENTAL)"
+	depends on BLK_DEV_DM
+	default n
+	select LIBCRC32C
+	help
+	 This device-mapper target implements a no-io for
+	 bios with well known patterns (0's)
+	 To compile this code as a module, choose M here: the module will
+	 be called dm-dedupe.
+	 If unsure, say N.
+
 config DM_MIRROR
        tristate "Mirror target"
        depends on BLK_DEV_DM

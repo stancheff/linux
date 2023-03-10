@@ -193,6 +193,10 @@ void dm_linear_exit(void);
 int dm_stripe_init(void);
 void dm_stripe_exit(void);
 
+#if IS_ENABLED(CONFIG_DM_DEDUPE)
+int dm_dedupe_init(void);
+void dm_dedupe_exit(void);
+#endif
 /*
  * mapped_device operations
  */

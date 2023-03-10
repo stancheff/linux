@@ -23129,6 +23129,12 @@ T:	git git://git.kernel.org/pub/scm/linux/kernel/git/dlemoal/zonefs.git
 F:	Documentation/filesystems/zonefs.rst
 F:	fs/zonefs/
 
+DEDUPE DEVICE MAPPER TARGET
+M:	Shaun Tancheff <shaun.tancheff@hpe.com>
+L:	dm-devel@redhat.com
+S:	Maintained
+F:	drivers/md/dm-dedupe.c
+
 ZPOOL COMPRESSED PAGE STORAGE API
 M:	Dan Streetman <ddstreet@ieee.org>
 L:	linux-mm@kvack.org

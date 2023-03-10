@@ -247,6 +247,9 @@ static int (*_inits[])(void) __initdata = {
 	local_init,
 	dm_target_init,
 	dm_linear_init,
+#if IS_ENABLED(CONFIG_DM_DEDUPE)
+	dm_dedupe_init,
+#endif
 	dm_stripe_init,
 	dm_io_init,
 	dm_kcopyd_init,
@@ -258,6 +261,9 @@ static void (*_exits[])(void) = {
 	local_exit,
 	dm_target_exit,
 	dm_linear_exit,
+#if IS_ENABLED(CONFIG_DM_DEDUPE)
+	dm_dedupe_exit,
+#endif
 	dm_stripe_exit,
 	dm_io_exit,
 	dm_kcopyd_exit,
