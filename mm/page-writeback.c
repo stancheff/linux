@@ -2749,6 +2749,71 @@ bool filemap_dirty_folio(struct address_space *mapping, struct folio *folio)
 }
 EXPORT_SYMBOL(filemap_dirty_folio);
 
+/* a 'batch' optimized filemap_dirty_folio() */
+void filemap_dirty_folio_batched(struct folio_batch *batch)
+{
+	struct folio *folio;
+	struct address_space *mapping;
+	int count = folio_batch_count(batch);
+	int i;
+	unsigned long flags;
+	unsigned long skip_pages = 0;
+	int dirtied = 0;
+
+	BUILD_BUG_ON(PAGEVEC_SIZE > BITS_PER_LONG);
+
+	if (count == 0)
+		return;
+
+	folio = batch->folios[0];
+	mapping = folio->mapping;
+	for (i = 0; i < count; i++) {
+		if (batch->folios[i]->mapping != mapping) {
+			WARN(1, "all folios must have the same mapping.");
+			return;
+		}
+	}
+
+	for (i = 0; i < count; i++) {
+		folio = batch->folios[i];
+
+		folio_clear_reclaim(folio);
+		folio_memcg_lock(folio);
+		if (folio_test_set_dirty(folio)) {
+			/* page is already dirty .. no extra work needed
+			 * set a flag for the i'th page to be skipped
+			 */
+			folio_memcg_unlock(folio);
+			skip_pages |= (1 << i);
+		}
+	}
+
+	xa_lock_irqsave(&mapping->i_pages, flags);
+
+	for (i = 0; i < count; i++) {
+		/* if the i'th page was unlocked above, skip it here */
+		if ((skip_pages >> i) & 1)
+			continue;
+
+		folio = batch->folios[i];
+		WARN_ON_ONCE(!folio_test_private(folio) &&
+			     !folio_test_uptodate(folio));
+
+		folio_account_dirtied(folio, mapping);
+		__xa_set_mark(&mapping->i_pages, folio_index(folio),
+			      PAGECACHE_TAG_DIRTY);
+		dirtied++;
+		folio_memcg_unlock(folio);
+	}
+	xa_unlock_irqrestore(&mapping->i_pages, flags);
+
+	if (mapping->host && dirtied) {
+		/* !PageAnon && !swapper_space */
+		__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);
+	}
+}
+EXPORT_SYMBOL(filemap_dirty_folio_batched);
+
 /**
  * folio_account_redirty - Manually account for redirtying a page.
  * @folio: The folio which is being redirtied.
