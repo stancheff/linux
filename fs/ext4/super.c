@@ -1350,6 +1350,8 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 	INIT_WORK(&ei->i_rsv_conversion_work, ext4_end_io_rsv_work);
 	ext4_fc_init_inode(&ei->vfs_inode);
 	mutex_init(&ei->i_fc_lock);
+	mutex_init(&ei->i_free_folios_lock);
+	INIT_LIST_HEAD(&ei->i_free_folios);
 	return &ei->vfs_inode;
 }
 
@@ -1366,6 +1368,7 @@ static int ext4_drop_inode(struct inode *inode)
 
 static void ext4_free_in_core_inode(struct inode *inode)
 {
+	ext4_prealloc_pages_release(inode);
 	fscrypt_free_inode(inode);
 	if (!list_empty(&(EXT4_I(inode)->i_fc_list))) {
 		pr_warn("%s: inode %ld still in fc list",

@@ -1167,6 +1167,9 @@ struct ext4_inode_info {
 
 	spinlock_t i_block_reservation_lock;
 
+	struct mutex i_free_folios_lock;
+	struct list_head i_free_folios;
+
 	/*
 	 * Transactions that contain inode's metadata needed to complete
 	 * fsync and fdatasync, respectively.
@@ -1822,6 +1825,21 @@ static inline int ext4_test_mount_flag(struct super_block *sb, int bit)
 	return test_bit(bit, &EXT4_SB(sb)->s_mount_flags);
 }
 
+static inline void ext4_prealloc_pages_release(struct inode *inode)
+{
+	struct folio *folio;
+	struct list_head *folios;
+
+	/* unused pre-alloc'd buffer pages */
+	mutex_lock(&EXT4_I(inode)->i_free_folios_lock);
+	folios = &EXT4_I(inode)->i_free_folios;
+	while ((folio = list_first_entry_or_null(folios, struct folio,
+						  lru)) != NULL) {
+		list_del(&folio->lru);
+		folio_put(folio);
+	}
+	mutex_unlock(&EXT4_I(inode)->i_free_folios_lock);
+}
 
 /*
  * Simulate_fail codes
