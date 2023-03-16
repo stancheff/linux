@@ -348,7 +348,7 @@ int netfs_write_begin(struct netfs_inode *ctx,
 	DEFINE_READAHEAD(ractl, file, NULL, mapping, index);
 
 retry:
-	folio = __filemap_get_folio(mapping, index, fgp_flags,
+	folio = __filemap_get_folio(mapping, index, NULL, fgp_flags,
 				    mapping_gfp_mask(mapping));
 	if (!folio)
 		return -ENOMEM;

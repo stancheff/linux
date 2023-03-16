@@ -25,7 +25,7 @@ static struct page *read_file_data_page(struct file *file, pgoff_t index,
 	DEFINE_READAHEAD(ractl, file, ra, file->f_mapping, index);
 	struct folio *folio;
 
-	folio = __filemap_get_folio(ractl.mapping, index, FGP_ACCESSED, 0);
+	folio = __filemap_get_folio(ractl.mapping, index, NULL, FGP_ACCESSED, 0);
 	if (!folio || !folio_test_uptodate(folio)) {
 		if (folio)
 			folio_put(folio);

@@ -374,7 +374,8 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	}
 
 	same_folio = (lstart >> PAGE_SHIFT) == (lend >> PAGE_SHIFT);
-	folio = __filemap_get_folio(mapping, lstart >> PAGE_SHIFT, FGP_LOCK, 0);
+	folio = __filemap_get_folio(mapping, lstart >> PAGE_SHIFT, NULL,
+				    FGP_LOCK, 0);
 	if (folio) {
 		same_folio = lend < folio_pos(folio) + folio_size(folio);
 		if (!truncate_inode_partial_folio(folio, lstart, lend)) {
@@ -388,7 +389,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	}
 
 	if (!same_folio)
-		folio = __filemap_get_folio(mapping, lend >> PAGE_SHIFT,
+		folio = __filemap_get_folio(mapping, lend >> PAGE_SHIFT, NULL,
 						FGP_LOCK, 0);
 	if (folio) {
 		if (!truncate_inode_partial_folio(folio, lstart, lend))
