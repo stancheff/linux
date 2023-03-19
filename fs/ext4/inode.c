@@ -1149,6 +1149,50 @@ static int ext4_block_write_begin(struct page *page, loff_t pos, unsigned len,
 }
 #endif
 
+static void ext4_inode_prealloc_pages_fill_locked(struct inode *inode,
+		unsigned int len, gfp_t gfp)
+{
+	LIST_HEAD(pages);
+	struct page *page;
+	struct folio *folio;
+
+	if (list_first_entry_or_null(&EXT4_I(inode)->i_free_folios,
+				     struct folio, lru))
+		return;
+
+	// Alloc bulk pages and convert pages to folios:
+	alloc_pages_bulk_list(gfp, DIV_ROUND_UP(len, PAGE_SIZE), &pages);
+	while ((page = list_first_entry_or_null(&pages, struct page,
+						 lru)) != NULL) {
+		folio = page_folio(page);
+		list_move(&folio->lru, &EXT4_I(inode)->i_free_folios);
+	}
+}
+
+static
+struct page *ext4_grab_cache_page_write_begin(struct address_space *mapping,
+		pgoff_t index, struct inode *inode, unsigned int len)
+{
+	struct folio *folio;
+	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+	struct list_head *folios = NULL;
+	int fgp = FGP_LOCK | FGP_CREAT | FGP_WRITE | FGP_STABLE;
+	gfp_t gfp = mapping_gfp_mask(mapping);
+
+	if (sbi->s_prealloc_folios) {
+		mutex_lock(&EXT4_I(inode)->i_free_folios_lock);
+		ext4_inode_prealloc_pages_fill_locked(inode, len, gfp);
+		folios = &EXT4_I(inode)->i_free_folios;
+		folio = __filemap_get_folio(mapping, index, folios, fgp, gfp);
+		mutex_unlock(&EXT4_I(inode)->i_free_folios_lock);
+	} else {
+		folio = __filemap_get_folio(mapping, index, folios, fgp, gfp);
+	}
+	if (folio)
+		return folio_file_page(folio, index);
+	return NULL;
+}
+
 static int ext4_write_begin(struct file *file, struct address_space *mapping,
 			    loff_t pos, unsigned len,
 			    struct page **pagep, void **fsdata)
@@ -1191,7 +1235,7 @@ static int ext4_write_begin(struct file *file, struct address_space *mapping,
 	 * the page (if needed) without using GFP_NOFS.
 	 */
 retry_grab:
-	page = grab_cache_page_write_begin(mapping, index);
+	page = ext4_grab_cache_page_write_begin(mapping, index, inode, len);
 	if (!page)
 		return -ENOMEM;
 	/*
@@ -3070,7 +3114,7 @@ static int ext4_da_write_begin(struct file *file, struct address_space *mapping,
 	}
 
 retry:
-	page = grab_cache_page_write_begin(mapping, index);
+	page = ext4_grab_cache_page_write_begin(mapping, index, inode, len);
 	if (!page)
 		return -ENOMEM;
 

@@ -1167,6 +1167,9 @@ struct ext4_inode_info {
 
 	spinlock_t i_block_reservation_lock;
 
+	struct mutex i_free_folios_lock;
+	struct list_head i_free_folios;
+
 	/*
 	 * Transactions that contain inode's metadata needed to complete
 	 * fsync and fdatasync, respectively.
@@ -1620,6 +1623,8 @@ struct ext4_sb_info {
 	unsigned long s_mb_last_start;
 	unsigned int s_mb_prefetch;
 	unsigned int s_mb_prefetch_limit;
+	/* preallocate folios limit for page cache */
+	unsigned int s_prealloc_folios;
 
 	/* stats for buddy allocator */
 	atomic_t s_bal_reqs;	/* number of reqs with len > 1 */
@@ -1821,7 +1826,6 @@ static inline int ext4_test_mount_flag(struct super_block *sb, int bit)
 {
 	return test_bit(bit, &EXT4_SB(sb)->s_mount_flags);
 }
-
 
 /*
  * Simulate_fail codes

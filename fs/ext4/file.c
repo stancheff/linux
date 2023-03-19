@@ -271,6 +271,55 @@ static ssize_t ext4_write_checks(struct kiocb *iocb, struct iov_iter *from)
 	return count;
 }
 
+static void ext4_inode_prealloc_pages(struct inode *inode, unsigned long len)
+{
+	LIST_HEAD(pages);
+	struct folio *folio;
+	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+	gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
+	unsigned long nr_pages = DIV_ROUND_UP(len, PAGE_SIZE);
+	unsigned long n = 0;
+
+	if (!sbi->s_prealloc_folios)
+		return;
+
+	/* unused pre-alloc'd buffer pages */
+	if (nr_pages > sbi->s_prealloc_folios)
+		nr_pages = sbi->s_prealloc_folios;
+
+	mutex_lock(&EXT4_I(inode)->i_free_folios_lock);
+	list_for_each_entry(folio, &EXT4_I(inode)->i_free_folios, lru)
+		n++;
+	if (n < nr_pages) {
+		struct page *page;
+
+		nr_pages -= n;
+		alloc_pages_bulk_list(gfp, nr_pages, &pages);
+		while ((page = list_first_entry_or_null(&pages, struct page,
+							 lru)) != NULL) {
+			folio = page_folio(page);
+			list_move(&folio->lru, &EXT4_I(inode)->i_free_folios);
+		}
+	}
+	mutex_unlock(&EXT4_I(inode)->i_free_folios_lock);
+}
+
+static void ext4_inode_prealloc_pages_release(struct inode *inode)
+{
+	struct folio *folio;
+	struct list_head *folios;
+
+	/* unused pre-alloc'd buffer pages */
+	mutex_lock(&EXT4_I(inode)->i_free_folios_lock);
+	folios = &EXT4_I(inode)->i_free_folios;
+	while ((folio = list_first_entry_or_null(folios, struct folio,
+						  lru)) != NULL) {
+		list_del(&folio->lru);
+		folio_put(folio);
+	}
+	mutex_unlock(&EXT4_I(inode)->i_free_folios_lock);
+}
+
 static ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
 					struct iov_iter *from)
 {
@@ -286,6 +335,7 @@ static ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
 		goto out;
 
 	current->backing_dev_info = inode_to_bdi(inode);
+	ext4_inode_prealloc_pages(inode, iov_iter_count(from));
 	ret = generic_perform_write(iocb, from);
 	current->backing_dev_info = NULL;
 
@@ -295,6 +345,7 @@ out:
 		iocb->ki_pos += ret;
 		ret = generic_write_sync(iocb, ret);
 	}
+	ext4_inode_prealloc_pages_release(inode);
 
 	return ret;
 }

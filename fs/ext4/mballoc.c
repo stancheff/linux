@@ -3206,6 +3206,8 @@ static int ext4_mb_init_backend(struct super_block *sb)
 	if (sbi->s_mb_prefetch_limit > ext4_get_groups_count(sb))
 		sbi->s_mb_prefetch_limit = ext4_get_groups_count(sb);
 
+	sbi->s_prealloc_folios = 0; /* default is none */
+
 	return 0;
 
 err_freebuddy:
