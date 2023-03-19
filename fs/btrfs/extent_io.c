@@ -220,20 +220,32 @@ void extent_range_clear_dirty_for_io(struct inode *inode, u64 start, u64 end)
 	}
 }
 
+static void folio_batch_dirty_account_put(struct folio_batch *batch)
+{
+	int i, count = folio_batch_count(batch);
+
+	filemap_dirty_folio_batched(batch);
+	for (i = 0; i < count; i++)
+		folio_account_redirty(batch->folios[i]);
+	folio_batch_release(batch);
+}
+
 void extent_range_redirty_for_io(struct inode *inode, u64 start, u64 end)
 {
+	struct folio_batch batch;
 	struct address_space *mapping = inode->i_mapping;
 	unsigned long index = start >> PAGE_SHIFT;
 	unsigned long end_index = end >> PAGE_SHIFT;
 	struct folio *folio;
 
+	folio_batch_init(&batch);
 	while (index <= end_index) {
 		folio = filemap_get_folio(mapping, index);
-		filemap_dirty_folio(mapping, folio);
-		folio_account_redirty(folio);
+		if (!folio_batch_add(&batch, folio))
+			folio_batch_dirty_account_put(&batch);
 		index += folio_nr_pages(folio);
-		folio_put(folio);
 	}
+	folio_batch_dirty_account_put(&batch);
 }
 
 /*
