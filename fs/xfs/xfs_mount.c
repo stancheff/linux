@@ -705,6 +705,7 @@ xfs_mountfs(
 
 	/* enable fail_at_unmount as default */
 	mp->m_fail_unmount = true;
+	mp->m_prealloc_folios = 0;
 
 	error = xfs_sysfs_init(&mp->m_kobj, &xfs_mp_ktype,
 			       NULL, mp->m_super->s_id);

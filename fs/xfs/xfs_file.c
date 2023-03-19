@@ -703,6 +703,7 @@ xfs_file_buffered_write(
 {
 	struct inode		*inode = iocb->ki_filp->f_mapping->host;
 	struct xfs_inode	*ip = XFS_I(inode);
+	struct folio		*folio;
 	ssize_t			ret;
 	bool			cleared_space = false;
 	unsigned int		iolock;
@@ -757,6 +758,15 @@ write_retry:
 out:
 	if (iolock)
 		xfs_iunlock(ip, iolock);
+
+	/* release unused pre-alloc'd buffer pages */
+	mutex_lock(&ip->i_free_folios_lock);
+	while ((folio = list_first_entry_or_null(&ip->i_free_folios,
+						 struct folio, lru)) != NULL) {
+		list_del(&folio->lru);
+		folio_put(folio);
+	}
+	mutex_unlock(&ip->i_free_folios_lock);
 
 	if (ret > 0) {
 		XFS_STATS_ADD(ip->i_mount, xs_write_bytes, ret);

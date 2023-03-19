@@ -62,6 +62,61 @@ xfs_iomap_inode_sequence(
 	return cookie | READ_ONCE(ip->i_df.if_seq);
 }
 
+static void
+xfs_prealloc_pages_fill_locked(struct xfs_inode *ip,
+			       loff_t len,
+			       gfp_t gfp)
+{
+	LIST_HEAD(pages);
+	struct page *page;
+	struct folio *folio;
+	struct xfs_mount *mp = ip->i_mount;
+
+	if (!mp->m_prealloc_folios)
+		return;
+
+	if (list_first_entry_or_null(&ip->i_free_folios, struct folio, lru))
+		return;
+
+	alloc_pages_bulk_list(gfp, DIV_ROUND_UP(len, PAGE_SIZE), &pages);
+	while ((page = list_first_entry_or_null(&pages, struct page,
+						lru)) != NULL) {
+		folio = page_folio(page);
+		list_move(&folio->lru, &ip->i_free_folios);
+	}
+}
+
+static struct folio *
+xfs_iomap_get_folio(struct iomap_iter *iter,
+		    loff_t pos,
+		    unsigned int len)
+{
+	struct xfs_inode *ip = XFS_I(iter->inode);
+	struct xfs_mount *mp = ip->i_mount;
+	struct folio *folio;
+	gfp_t gfp_mask = mapping_gfp_mask(iter->inode->i_mapping);
+	unsigned int fgp_flags;
+
+	if (!mp->m_prealloc_folios)
+		return iomap_get_folio(iter, pos);
+
+	fgp_flags = FGP_LOCK | FGP_WRITE | FGP_CREAT | FGP_STABLE | FGP_NOFS;
+	if (iter->flags & IOMAP_NOWAIT)
+		fgp_flags |= FGP_NOWAIT;
+
+	mutex_lock(&ip->i_free_folios_lock);
+	xfs_prealloc_pages_fill_locked(ip, iomap_length(iter), gfp_mask);
+	folio = __filemap_get_folio(iter->inode->i_mapping, pos >> PAGE_SHIFT,
+				    &ip->i_free_folios, fgp_flags, gfp_mask);
+	mutex_unlock(&ip->i_free_folios_lock);
+	if (folio)
+		return folio;
+
+	if (iter->flags & IOMAP_NOWAIT)
+		return ERR_PTR(-EAGAIN);
+	return ERR_PTR(-ENOMEM);
+}
+
 /*
  * Check that the iomap passed to us is still valid for the given offset and
  * length.
@@ -84,6 +139,7 @@ xfs_iomap_valid(
 }
 
 static const struct iomap_folio_ops xfs_iomap_folio_ops = {
+	.get_folio		= xfs_iomap_get_folio,
 	.iomap_valid		= xfs_iomap_valid,
 };
 

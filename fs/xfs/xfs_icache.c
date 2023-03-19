@@ -114,6 +114,8 @@ xfs_inode_alloc(
 	spin_lock_init(&ip->i_ioend_lock);
 	ip->i_next_unlinked = NULLAGINO;
 	ip->i_prev_unlinked = NULLAGINO;
+	INIT_LIST_HEAD(&ip->i_free_folios);
+	mutex_init(&ip->i_free_folios_lock);
 
 	return ip;
 }

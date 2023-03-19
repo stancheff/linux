@@ -557,6 +557,38 @@ fail_at_unmount_store(
 }
 XFS_SYSFS_ATTR_RW(fail_at_unmount);
 
+static ssize_t
+prealloc_folios_show(
+	struct kobject	*kobject,
+	char		*buf)
+{
+	struct xfs_mount	*mp = err_to_mp(kobject);
+
+	return sysfs_emit(buf, "%d\n", mp->m_prealloc_folios);
+}
+
+static ssize_t
+prealloc_folios_store(
+	struct kobject	*kobject,
+	const char	*buf,
+	size_t		count)
+{
+	struct xfs_mount	*mp = err_to_mp(kobject);
+	int			ret;
+	int			val;
+
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val < 0 || val > 4096)
+		return -EINVAL;
+
+	mp->m_prealloc_folios = val;
+	return count;
+}
+XFS_SYSFS_ATTR_RW(prealloc_folios);
+
 static struct attribute *xfs_error_attrs[] = {
 	ATTR_LIST(max_retries),
 	ATTR_LIST(retry_timeout_seconds),
@@ -665,6 +697,11 @@ xfs_error_sysfs_init(
 
 	error = sysfs_create_file(&mp->m_error_kobj.kobject,
 				  ATTR_LIST(fail_at_unmount));
+	if (error)
+		goto out_error;
+
+	error = sysfs_create_file(&mp->m_error_kobj.kobject,
+				  ATTR_LIST(prealloc_folios));
 
 	if (error)
 		goto out_error;
