@@ -139,14 +139,14 @@ mext_folio_double_lock(struct inode *inode1, struct inode *inode2,
 	}
 
 	flags = memalloc_nofs_save();
-	folio[0] = __filemap_get_folio(mapping[0], index1, fgp_flags,
+	folio[0] = __filemap_get_folio(mapping[0], index1, NULL, fgp_flags,
 			mapping_gfp_mask(mapping[0]));
 	if (!folio[0]) {
 		memalloc_nofs_restore(flags);
 		return -ENOMEM;
 	}
 
-	folio[1] = __filemap_get_folio(mapping[1], index2, fgp_flags,
+	folio[1] = __filemap_get_folio(mapping[1], index2, NULL, fgp_flags,
 			mapping_gfp_mask(mapping[1]));
 	memalloc_nofs_restore(flags);
 	if (!folio[1]) {

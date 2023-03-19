@@ -324,8 +324,8 @@ expand:
 				afs_stat_v(dvnode, n_inval);
 
 			ret = -ENOMEM;
-			folio = __filemap_get_folio(mapping,
-						    i, FGP_LOCK | FGP_CREAT,
+			folio = __filemap_get_folio(mapping, i, NULL,
+						    FGP_LOCK | FGP_CREAT,
 						    mapping->gfp_mask);
 			if (!folio)
 				goto error;
@@ -523,7 +523,7 @@ static int afs_dir_iterate(struct inode *dir, struct dir_context *ctx,
 		 * to the LRU.  We have all the pages pinned with an extra ref.
 		 */
 		folio = __filemap_get_folio(dir->i_mapping, ctx->pos / PAGE_SIZE,
-					    FGP_ACCESSED, 0);
+					    NULL, FGP_ACCESSED, 0);
 		if (!folio) {
 			ret = afs_bad(dvnode, afs_file_error_dir_missing_page);
 			break;

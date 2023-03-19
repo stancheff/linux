@@ -112,7 +112,7 @@ static struct folio *afs_dir_get_folio(struct afs_vnode *vnode, pgoff_t index)
 	struct address_space *mapping = vnode->netfs.inode.i_mapping;
 	struct folio *folio;
 
-	folio = __filemap_get_folio(mapping, index,
+	folio = __filemap_get_folio(mapping, index, NULL,
 				    FGP_LOCK | FGP_ACCESSED | FGP_CREAT,
 				    mapping->gfp_mask);
 	if (!folio)

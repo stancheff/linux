@@ -3092,7 +3092,7 @@ static int split_huge_pages_in_file(const char *file_path, pgoff_t off_start,
 	mapping = candidate->f_mapping;
 
 	for (index = off_start; index < off_end; index += nr_pages) {
-		struct folio *folio = __filemap_get_folio(mapping, index,
+		struct folio *folio = __filemap_get_folio(mapping, index, NULL,
 						FGP_ENTRY, 0);
 
 		nr_pages = 1;

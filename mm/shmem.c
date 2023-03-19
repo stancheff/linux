@@ -885,7 +885,7 @@ static struct folio *shmem_get_partial_folio(struct inode *inode, pgoff_t index)
 	 * At first avoid shmem_get_folio(,,,SGP_READ): that fails
 	 * beyond i_size, and reports fallocated pages as holes.
 	 */
-	folio = __filemap_get_folio(inode->i_mapping, index,
+	folio = __filemap_get_folio(inode->i_mapping, index, NULL,
 					FGP_ENTRY | FGP_LOCK, 0);
 	if (!xa_is_value(folio))
 		return folio;
@@ -1874,7 +1874,7 @@ repeat:
 	sbinfo = SHMEM_SB(inode->i_sb);
 	charge_mm = vma ? vma->vm_mm : NULL;
 
-	folio = __filemap_get_folio(mapping, index, FGP_ENTRY | FGP_LOCK, 0);
+	folio = __filemap_get_folio(mapping, index, NULL, FGP_ENTRY | FGP_LOCK, 0);
 	if (folio && vma && userfaultfd_minor(vma)) {
 		if (!xa_is_value(folio)) {
 			folio_unlock(folio);

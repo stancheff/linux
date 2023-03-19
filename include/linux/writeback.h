@@ -11,6 +11,7 @@
 #include <linux/flex_proportions.h>
 #include <linux/backing-dev-defs.h>
 #include <linux/blk_types.h>
+#include <linux/pagevec.h>
 
 struct bio;
 
@@ -380,6 +381,8 @@ void tag_pages_for_writeback(struct address_space *mapping,
 			     pgoff_t start, pgoff_t end);
 
 bool filemap_dirty_folio(struct address_space *mapping, struct folio *folio);
+void filemap_dirty_folio_batched(struct folio_batch *batch);
+
 void folio_account_redirty(struct folio *folio);
 static inline void account_page_redirty(struct page *page)
 {

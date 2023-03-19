@@ -474,7 +474,7 @@ struct folio *iomap_get_folio(struct iomap_iter *iter, loff_t pos)
 		fgp |= FGP_NOWAIT;
 
 	folio = __filemap_get_folio(iter->inode->i_mapping, pos >> PAGE_SHIFT,
-			fgp, mapping_gfp_mask(iter->inode->i_mapping));
+			NULL, fgp, mapping_gfp_mask(iter->inode->i_mapping));
 	if (folio)
 		return folio;
 

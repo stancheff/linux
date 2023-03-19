@@ -1912,9 +1912,10 @@ out:
  * Return: The found folio or %NULL otherwise.
  */
 struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
-		int fgp_flags, gfp_t gfp)
+		struct list_head *folios, int fgp_flags, gfp_t gfp)
 {
 	struct folio *folio;
+	int provided = 0;
 
 repeat:
 	folio = mapping_get_entry(mapping, index);
@@ -1967,7 +1968,14 @@ no_page:
 			gfp |= GFP_NOWAIT | __GFP_NOWARN;
 		}
 
-		folio = filemap_alloc_folio(gfp, 0);
+		if (folios) {
+			folio = list_first_entry_or_null(folios, struct folio,
+							 lru);
+			list_del(&folio->lru);
+			provided = !!folio;
+		}
+		if (!folio)
+			folio = filemap_alloc_folio(gfp, 0);
 		if (!folio)
 			return NULL;
 
@@ -1981,6 +1989,8 @@ no_page:
 		err = filemap_add_folio(mapping, folio, index, gfp);
 		if (unlikely(err)) {
 			folio_put(folio);
+			if (provided)
+				list_add(&folio->lru, folios);
 			folio = NULL;
 			if (err == -EEXIST)
 				goto repeat;
@@ -3289,7 +3299,7 @@ retry_find:
 			filemap_invalidate_lock_shared(mapping);
 			mapping_locked = true;
 		}
-		folio = __filemap_get_folio(mapping, index,
+		folio = __filemap_get_folio(mapping, index, NULL,
 					  FGP_CREAT|FGP_FOR_MMAP,
 					  vmf->gfp_mask);
 		if (!folio) {

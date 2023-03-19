@@ -508,7 +508,7 @@ pgoff_t page_cache_prev_miss(struct address_space *mapping,
 #define FGP_STABLE		0x00000100
 
 struct folio *__filemap_get_folio(struct address_space *mapping, pgoff_t index,
-		int fgp_flags, gfp_t gfp);
+		struct list_head *folios, int fgp_flags, gfp_t gfp);
 struct page *pagecache_get_page(struct address_space *mapping, pgoff_t index,
 		int fgp_flags, gfp_t gfp);
 
@@ -525,7 +525,7 @@ struct page *pagecache_get_page(struct address_space *mapping, pgoff_t index,
 static inline struct folio *filemap_get_folio(struct address_space *mapping,
 					pgoff_t index)
 {
-	return __filemap_get_folio(mapping, index, 0, 0);
+	return __filemap_get_folio(mapping, index, NULL, 0, 0);
 }
 
 /**
@@ -543,7 +543,7 @@ static inline struct folio *filemap_get_folio(struct address_space *mapping,
 static inline struct folio *filemap_lock_folio(struct address_space *mapping,
 					pgoff_t index)
 {
-	return __filemap_get_folio(mapping, index, FGP_LOCK, 0);
+	return __filemap_get_folio(mapping, index, NULL, FGP_LOCK, 0);
 }
 
 /**
@@ -561,7 +561,7 @@ static inline struct folio *filemap_lock_folio(struct address_space *mapping,
 static inline struct folio *filemap_grab_folio(struct address_space *mapping,
 					pgoff_t index)
 {
-	return __filemap_get_folio(mapping, index,
+	return __filemap_get_folio(mapping, index, NULL,
 			FGP_LOCK | FGP_ACCESSED | FGP_CREAT,
 			mapping_gfp_mask(mapping));
 }
