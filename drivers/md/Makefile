@@ -88,6 +88,7 @@ obj-$(CONFIG_SECURITY_LOADPIN_VERITY)	+= dm-verity-loadpin.o
 ifeq ($(CONFIG_DM_INIT),y)
 dm-mod-objs			+= dm-init.o
 endif
+obj-$(CONFIG_DM_DEDUPE)	+= dm-dedupe.o
 
 ifeq ($(CONFIG_DM_UEVENT),y)
 dm-mod-objs			+= dm-uevent.o
