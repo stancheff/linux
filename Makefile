@@ -1783,10 +1783,12 @@ PHONY += prepare
 # now expand this into a simple variable to reduce the cost of shell evaluations
 prepare: CC_VERSION_TEXT := $(CC_VERSION_TEXT)
 prepare:
-	@if [ "$(CC_VERSION_TEXT)" != "$(CONFIG_CC_VERSION_TEXT)" ]; then \
+	_left=$(echo "$(CC_VERSION_TEXT)" | tr '( )' .)
+	_right=$(echo "$(CONFIG_CC_VERSION_TEXT)" | tr '( )' .)
+	@if [ "$(_left)" != "$(_right)" ]; then \
 		echo >&2 "warning: the compiler differs from the one used to build the kernel"; \
-		echo >&2 "  The kernel was built by: $(CONFIG_CC_VERSION_TEXT)"; \
-		echo >&2 "  You are using:           $(CC_VERSION_TEXT)"; \
+		echo >&2 "  The kernel was built by: $(_right)"; \
+		echo >&2 "  You are using:           $(_left)"; \
 	fi
 
 PHONY += help
